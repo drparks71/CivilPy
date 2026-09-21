@@ -119,6 +119,23 @@ def _floor_eighth(x: float) -> float:
     return math.floor(x * 8.0) / 8.0
 
 
+METHODS = ("nsba", "stress_based")
+_METHOD_ALIASES = {"odot_bdm": "stress_based"}
+
+
+def _method(name: str) -> str:
+    """Canonical flange design-force method name; warns on the deprecated
+    ``"odot_bdm"`` alias and rejects unknown names."""
+    if name in _METHOD_ALIASES:
+        import warnings
+        warnings.warn(f'method="{name}" is deprecated; use method="{_METHOD_ALIASES[name]}"',
+                      DeprecationWarning, stacklevel=3)
+        name = _METHOD_ALIASES[name]
+    if name not in METHODS:
+        raise ValueError(f"unknown splice method {name!r}; expected one of {METHODS}")
+    return name
+
+
 def _block_shear(n_shear, l_shear, holes_shear, n_tension, tens_gross,
                  holes_tension, t, f_y, f_u, hole, p_u, name):
     """Block-shear rupture (6.13.4) for a rectangular tear-out.  ``n_shear``
@@ -280,9 +297,11 @@ class SpliceInput:
     # "nsba" (default): design each flange for its full yield capacity
     # (Fcf = Fyf) with the total force in the plates' shear planes -- the
     # conservative method the two plate-girder validation designs use.
-    # "odot_bdm": the pre-9th-edition stress-based method (as used by the ODOT reference design) -- design stress
-    # Fcf from the actual factored flange stress (fcf_top/fcf_bot), the 6.8.3
+    # "stress_based": the pre-9th-edition (<= 8th ed. 6.13.6.1.4c) method --
+    # design stress Fcf from the actual factored flange stress
+    # (fcf_top/fcf_bot) with the 0.75*alpha*phi_f*Fyf floor, the 6.8.3
     # net-area hole (nominal + 1/16), and per-plate single-shear bolt counts.
+    # "odot_bdm" is accepted as a deprecated alias of "stress_based".
     method: str = "nsba"
     fcf_top: float | None = None      # factored top-flange stress, ksi (signed)
     fcf_bot: float | None = None      # factored bottom-flange stress, ksi
@@ -402,7 +421,7 @@ def _flange_pfy(flange: Flange, n_rows: int, hole_dia: float,
 
 def _design_flange(inp: SpliceInput, position: str) -> ComponentDesign:
     b = inp.bolts
-    odot = inp.method == "odot_bdm"
+    odot = _method(inp.method) == "stress_based"
     hole = _hole_dia(b.diameter, b.hole_type)
     net_hole = _net_hole_dia(b.diameter, b.hole_type, add_638=odot)
     if position == "top":
@@ -446,7 +465,7 @@ def _design_flange(inp: SpliceInput, position: str) -> ComponentDesign:
     bolt_cap = bolt.factored_capacity  # phi already applied
 
     # strength bolt count.  nsba: the whole flange force Pfy across the plates'
-    # shear planes.  odot_bdm: the larger *apportioned* plate force
+    # shear planes.  stress_based: the larger *apportioned* plate force
     # (C6.13.6.1.3b) across a single shear plane for the ODOT BDM method;
     # this is more conservative for inner+outer plate splices.
     if odot:
@@ -546,7 +565,7 @@ def _design_flange(inp: SpliceInput, position: str) -> ComponentDesign:
     comp.checks.append(CheckResult(
         article="6.13.2.8", name=f"{position} flange Service II slip",
         capacity=controlling * pt_per, demand=slip_force))
-    # Net-area / block-shear deductions use the 6.8.3 hole (odot_bdm); nsba
+    # Net-area / block-shear deductions use the 6.8.3 hole (stress_based); nsba
     # keeps the bare nominal hole for continuity with the legacy designs.
     _flange_checks(inp, comp, plates, ctrl, pfy, fy_l, fu_l, net_hole, n_rows)
     return comp

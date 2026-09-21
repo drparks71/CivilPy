@@ -268,7 +268,7 @@ def _design_synthetic_rolled_splice():
         bolt_spacing=3.0, flange_edge=1.5, flange_end=1.5,
         web_edge=1.5, web_end=1.5, web_weld_size=0.3125, web_weld_clearance=0.375,
         girder_gap=0.75, entering_tightening=3.0, design_year=2016,
-        method="odot_bdm", fcf_top=10.0, fcf_bot=20.0, r_h=1.0, alpha=1.0,
+        method="stress_based", fcf_top=10.0, fcf_bot=20.0, r_h=1.0, alpha=1.0,
     )
     return design_splice(inp)
 
@@ -343,7 +343,7 @@ class TestGirderSideFromW:
             top_flange_rows=2, bottom_flange_rows=2, web_rows=4,
             bolt_spacing=3.0, flange_edge=1.5, flange_end=1.5,
             web_edge=1.5, web_end=1.5, design_year=2016,
-            method="odot_bdm", fcf_top=10.0, fcf_bot=20.0,
+            method="stress_based", fcf_top=10.0, fcf_bot=20.0,
         )
         d = design_splice(inp)
         net_area = (12.8 - 2 * 1.0) * 0.75

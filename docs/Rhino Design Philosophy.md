@@ -1167,7 +1167,7 @@ this repo:
 - [~] **G7 (Python) — splice design for rolled shapes. Front end + fixture
   done; composite `fcf` (B4) remains.** Added `girder_side_from_w(label, grade)`
   (builds `GirderSide` from the AISC db via `steel.W`), and a selectable
-  `SpliceInput.method="odot_bdm"` applies design stress `Fcf`, net-area hole
+  `SpliceInput.method="stress_based"` applies design stress `Fcf`, net-area hole
   allowances, and per-plate bolt checks. Synthetic regression cases cover
   both hand-entered section dimensions and catalog-label inputs
   (`TestSyntheticRolledSplice`, `TestGirderSideFromW`). The public NSBA

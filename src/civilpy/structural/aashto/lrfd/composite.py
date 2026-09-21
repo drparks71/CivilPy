@@ -210,7 +210,7 @@ def design_rolled_splice(left_label: str, right_label: str, loads: "SpliceLoads"
     Builds both :class:`GirderSide`\\ s from AISC labels, computes the composite
     flange design stresses ``fcf`` from the deck section (so **no MDX-supplied
     stress is needed**), and runs :func:`design_splice` with
-    ``method="odot_bdm"``.  Extra ``design_splice`` inputs (``bolts``,
+    ``method="stress_based"``.  Extra ``design_splice`` inputs (``bolts``,
     ``top_plates``/``bottom_plates``, ``web_plate``, ``*_rows``, spacing,
     ``design_year`` …) pass through ``splice_kwargs``.
     """
@@ -227,7 +227,7 @@ def design_rolled_splice(left_label: str, right_label: str, loads: "SpliceLoads"
     inp = SpliceInput(
         left=left, right=right, loads=loads,
         deck_composite=True, deck_thickness=deck_thickness,
-        deck_eff_width=deck_eff_width, fc=deck_fc, method="odot_bdm",
+        deck_eff_width=deck_eff_width, fc=deck_fc, method="stress_based",
         fcf_top=cg.flange_fcf("top", loads),
         fcf_bot=cg.flange_fcf("bottom", loads),
         **splice_kwargs)
