@@ -16,9 +16,18 @@ feeding the article-level primitives in
 :mod:`civilpy.structural.aashto.lrfd.splices`.
 
 Units are kip, inch, ksi throughout (moments are supplied in kip-ft and
-converted internally).  The design procedure follows the 8th/9th Edition
-simplified flange-force method (C6.13.6.1.3b, 6.13.6.1.3c); the bolt shear
-coefficient is the 8th-Edition value (0.56/0.45) via ``design_year``.
+converted internally).  The default ``method="nsba"`` is the 9th/10th Edition
+simplified method (flange splice designed for Pfy = Fy*Ae of the smaller
+flange, 6.13.6.1.3b; web for the design shear plus Hw, 6.13.6.1.3c) as
+implemented by the NSBA Bolted Splice Designer v4.01, including its
+advance implementation of the 11th-Edition slab-strength rule (positive
+flexure: when 0.85 f'c beff ts < Pfy + Hw the section is treated as
+non-composite and Hw acts on D/4) and its single-shear-plane apportioning
+of Pfy when the inner and outer plate areas differ by more than 10 %.
+``method="stress_based"`` is the pre-9th-Edition design-stress method
+(Fcf with the 0.75 Fy floor).  The bolt shear coefficient is the 8th-Edition
+value (0.56/0.45) via ``design_year``.  Validated against the four v4.01
+example workbooks (tests/structural/test_bolted_field_splice.py).
 
 The web bolt group is sized for the design shear combined with the horizontal
 force ``Hw`` from the portion of the moment the flanges cannot carry
@@ -468,14 +477,23 @@ def _design_flange(inp: SpliceInput, position: str) -> ComponentDesign:
     # shear planes.  stress_based: the larger *apportioned* plate force
     # (C6.13.6.1.3b) across a single shear plane for the ODOT BDM method;
     # this is more conservative for inner+outer plate splices.
-    if odot:
+    if odot or plates.shear_planes == 1:
+        # single shear plane (NSBA v4 'Shear Planes per Bolt = 1', or the
+        # stress-based method): the bolts carry the larger apportioned plate
+        # share of Pfy -- the area share when the inner and outer plate areas
+        # differ by more than 10 %, otherwise one half (C6.13.6.1.3b).
         bolt1 = steel.bolt_shear_resistance(
             d_bolt=b.diameter, f_ub=BOLT_FU[b.bolt_type], n_planes=1,
             threads_excluded=b.flange_threads_excluded,
             design_year=inp.design_year)
-        sp0 = splices.splice_plate_design_force(
-            pfy, plates.outer_area, plates.inner_area)
-        count_force = max(sp0.outer, sp0.inner)
+        a_i, a_o = plates.inner_area, plates.outer_area
+        diff = abs(a_o - a_i) / (0.5 * (a_o + a_i))
+        share = 0.5 if diff <= 0.10 else max(a_i, a_o) / (a_i + a_o)
+        if odot:
+            sp0 = splices.splice_plate_design_force(pfy, a_o, a_i)
+            count_force = max(sp0.outer, sp0.inner)
+        else:
+            count_force = pfy * share
         count_cap = bolt1.factored_capacity
     else:
         count_force = pfy
@@ -483,9 +501,12 @@ def _design_flange(inp: SpliceInput, position: str) -> ComponentDesign:
     strength_bolts = _ceil_mult(count_force / (count_cap * r_fill), n_rows)
 
     # slip capacity per bolt (Service II, phi = 1.0)
+    # per-bolt slip resistance for the flange moment checks: the NSBA
+    # designer uses the double-shear value for every flange whatever the
+    # shear-plane count entered for the bolt count (Rn = Kh*Ks*2*Pt).
     slip = steel.bolt_slip_resistance(
         bolt_grade=b.bolt_type, d_bolt=b.diameter,
-        n_planes=plates.shear_planes, hole_type=b.hole_type,
+        n_planes=2, hole_type=b.hole_type,
         surface_class=b.surface_class,
     )
     pt_per = slip.capacity
@@ -505,13 +526,18 @@ def _design_flange(inp: SpliceInput, position: str) -> ComponentDesign:
         return _ceil_mult(force / pt_per, rows), force
 
     if position == "bottom":
-        n_pos, f_pos = slip_count(m["service_pos"], arm_pos, n_rows)
-        n_deck, f_deck = slip_count(m["deck_cast"], arm_steel, n_rows)
-        slip_bolts = max(n_pos, n_deck)
-        slip_force = max(f_pos, f_deck)
+        # Service II positive moment (deck in compression) loads the bottom
+        # flange splice; the composite arm applies when the deck is composite.
+        slip_bolts, slip_force = slip_count(
+            m["service_pos"], arm_pos if inp.deck_composite else arm_steel,
+            n_rows)
     else:
-        slip_bolts, slip_force = slip_count(m["service_neg"], arm_steel,
-                                            n_rows)
+        # Service II negative moment and the deck-casting (bare steel) case
+        # both load the top flange splice on the steel arm.
+        n_neg, f_neg = slip_count(m["service_neg"], arm_steel, n_rows)
+        n_deck, f_deck = slip_count(m["deck_cast"], arm_steel, n_rows)
+        slip_bolts = max(n_neg, n_deck)
+        slip_force = max(f_neg, f_deck)
 
     # Controlling bolt count is sized for strength and the long-joint
     # reduction only; slip (a serviceability limit) is reported as a separate
@@ -702,10 +728,32 @@ def _design_web(inp: SpliceInput, top: ComponentDesign,
     # --- horizontal web force Hw (6.13.6.1.3c) --------------------------------
     # Strength: the excess of the factored moment over the moment the flange
     # splices resist (min tension-flange design force x arm) goes to the web.
-    m_flange_pos = bottom.design_force * arm_pos / 12.0
-    m_flange_neg = top.design_force * arm_steel / 12.0
-    hw_strength_pos = _web_moment_force(m["strength_pos"], m_flange_pos,
-                                        web_depth)
+    # Positive flexure, composite deck: the flange moment resistance is the
+    # bottom-flange Pfy on the composite arm and the excess acts on the arm
+    # from mid-web to mid-deck (C6.13.6.1.3c).  When the deck cannot take
+    # Pfy + Hw in compression (0.85 f'c beff ts, the 11th-edition slab
+    # strength check the NSBA designer applies in advance) the section is
+    # treated as non-composite: Pfy on the steel arm, Hw on D/4.
+    p_bot = bottom.design_force
+    hw_comp = 0.0
+    if inp.deck_composite and inp.deck_eff_width > 0:
+        m_flange_comp = p_bot * arm_pos / 12.0
+        excess = abs(m["strength_pos"]) - m_flange_comp
+        haunch = inp.left.haunch if inp.left.haunch else inp.left.top_flange.thickness
+        arm_hw = inp.left.web_depth / 2.0 + haunch + inp.deck_thickness / 2.0
+        hw_comp = excess * 12.0 / arm_hw if excess > 0 else 0.0
+        slab = 0.85 * inp.fc * inp.deck_eff_width * inp.deck_thickness
+        slab_ok = slab >= p_bot + hw_comp
+    else:
+        slab_ok = False
+    if slab_ok:
+        hw_strength_pos = hw_comp
+    else:
+        hw_strength_pos = _web_moment_force(
+            m["strength_pos"], p_bot * arm_steel / 12.0, web_depth)
+    # Negative flexure: the smaller of the four flange design forces on the
+    # steel arm (the NSBA designer takes MIN over both flanges).
+    m_flange_neg = min(top.design_force, bottom.design_force) * arm_steel / 12.0
     hw_strength_neg = _web_moment_force(m["strength_neg"], m_flange_neg,
                                         web_depth)
     hw_strength = max(hw_strength_pos, hw_strength_neg)
@@ -722,15 +770,19 @@ def _design_web(inp: SpliceInput, top: ComponentDesign,
     # (flange bolts x their pretension slip x arm).  The larger of the two
     # composite directions is combined with each composite shear case; deck
     # casting (bare steel) carries only its own Hw.
-    pt_flange = top.extra["pt_per"]
-    m_slip_pos = bottom.total_bolts * pt_flange * arm_pos / 12.0
-    m_slip_neg = top.total_bolts * pt_flange * arm_steel / 12.0
-    m_slip_deck = bottom.total_bolts * pt_flange * arm_steel / 12.0
+    pt_flange = top.extra["pt_per"]              # double-shear slip value
+    n_min = min(top.total_bolts, bottom.total_bolts)
+    m_slip_pos = bottom.total_bolts * pt_flange * (
+        arm_pos if inp.deck_composite else arm_steel) / 12.0
+    m_slip_neg = n_min * pt_flange * arm_steel / 12.0
+    m_slip_deck = n_min * pt_flange * arm_steel / 12.0
     hw_service = max(
         _web_moment_force(m["service_pos"], m_slip_pos, web_depth),
         _web_moment_force(m["service_neg"], m_slip_neg, web_depth),
     )
     hw_deck = _web_moment_force(m["deck_cast"], m_slip_deck, web_depth)
+
+    slab_status = "OK" if slab_ok else ("NOTICE" if inp.deck_composite else "DNA")
 
     r_deck = math.hypot(v["deck_cast"], hw_deck)
     r_service_pos = math.hypot(v["service_pos"], hw_service)
@@ -794,7 +846,7 @@ def _design_web(inp: SpliceInput, top: ComponentDesign,
                "per_row": per_row, "v_left": v_left, "v_right": v_right,
                "Vp_left": 0.58 * _grade(inp.left.web_material)[0]
                * inp.left.web_depth * inp.left.web_thickness,
-               "hw_strength": hw_strength, "hw_strength_pos": hw_strength_pos,
+               "hw_strength": hw_strength, "hw_strength_pos": hw_strength_pos, "hw_comp": hw_comp, "slab_status": slab_status,
                "hw_strength_neg": hw_strength_neg, "hw_service": hw_service,
                "strength_resultant": resultant,
                "slip_resultant": slip_resultant, "pt_per": pt_per},

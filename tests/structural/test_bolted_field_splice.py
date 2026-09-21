@@ -352,3 +352,71 @@ class TestGirderSideFromW:
         assert d.top_flange.total_bolts == 10
         assert d.bottom_flange.total_bolts == 10
         assert d.ok
+
+
+# ---------------------------------------------------------------------------
+# NSBA Bolted Splice Designer v4.01 — the four example workbooks distributed
+# with the tool (Steel Bridge Design Handbook Ch. 14 examples 1 and 2, and two
+# NSBA Standard Plans girders that trip the slab-strength rule).  Expected
+# values are the workbook's spreadsheet-calculated bolt counts; Example 4's
+# web count in the workbook is a user override (48) of the calculated 28.
+# ---------------------------------------------------------------------------
+
+def _nsba(left, right, loads, bolt_d, top_pl, bot_pl, web_t, deck, rows, spacing, edges, misc):
+    bolts = BoltSpec(bolt_type="A325", diameter=bolt_d, flange_threads_excluded=True,
+                     web_threads_excluded=False, surface_class="B", hole_type="standard")
+    return design_splice(SpliceInput(
+        left=left, right=right, loads=loads, bolts=bolts,
+        top_plates=PlatePair("Grade 50W", *top_pl), bottom_plates=PlatePair("Grade 50W", *bot_pl),
+        web_plate=WebPlate("Grade 50W", web_t, 2),
+        deck_composite=True, deck_thickness=deck[0], deck_eff_width=deck[1], fc=deck[2],
+        top_flange_rows=rows[0], web_rows=rows[1], bottom_flange_rows=rows[2],
+        bolt_spacing=spacing, flange_edge=edges[0], flange_end=edges[1], web_edge=edges[2], web_end=edges[3],
+        web_weld_size=0.3125, web_weld_clearance=misc[0], girder_gap=misc[1], entering_tightening=misc[2],
+        design_year=2020, method="nsba"))
+
+
+class TestNsba401Examples:
+    def test_example_1_handbook_ch14_ex1(self):
+        left = GirderSide(Flange("Grade 50W", 1.0, 16.0), Flange("Grade 50W", 1.375, 18.0), "Grade 50W", 0.5, 69.0, 1.0, 17.25, True)
+        right = GirderSide(Flange("HPS Grade 70W", 1.0, 18.0), Flange("HPS Grade 70W", 1.0, 20.0), "Grade 50W", 0.5625, 69.0, 1.0, 12.0, True)
+        loads = SpliceLoads(248, -82, 50, -12, 52, -11, 2469, 19, -1754, -112, 1300, -82)
+        d = _nsba(left, right, loads, 0.875, (0.6875, 7.0, 0.625, 16.0, 2), (0.875, 8.0, 0.75, 18.0, 2), 0.3125,
+                  (9.0, 114.0, 4.0), (4, 2, 4), 3.0, (2.0, 1.5, 2.0, 1.5), (0.375, 0.75, 3.0))
+        assert (d.top_flange.total_bolts, d.web.total_bolts, d.bottom_flange.total_bolts) == (12, 26, 24)
+        assert d.web.extra["hw_strength"] == 0.0
+        assert d.ok
+
+    def test_example_2_handbook_ch14_ex2(self):
+        left = GirderSide(Flange("Grade 50", 1.0, 19.0), Flange("Grade 50", 1.4375, 20.0), "Grade 50", 0.75, 109.0, 2.0, 0.0, False)
+        right = GirderSide(Flange("Grade 50", 2.0, 22.0), Flange("Grade 50", 2.25, 24.0), "Grade 50", 0.75, 109.0, 2.0, 27.25, True)
+        loads = SpliceLoads(-1564, -147, -242, -28, -315, -37, 5627, 19, -7117, -126, 3006, -79)
+        d = _nsba(left, right, loads, 0.875, (0.625, 8.5, 0.5625, 19.0, 2), (0.875, 9.0, 0.8125, 20.0, 2), 0.4375,
+                  (8.0, 114.0, 4.0), (4, 2, 4), 3.0, (2.0, 1.125, 2.0, 1.75), (0.25, 0.75, 3.0))
+        assert (d.top_flange.total_bolts, d.web.total_bolts, d.bottom_flange.total_bolts) == (20, 66, 28)
+        assert d.web.extra["hw_strength"] == pytest.approx(3319.0, rel=0.01)
+        assert d.web.extra["slab_status"] == "OK"
+
+    def test_example_3_standard_plans_300ft_slab_strength_exceeded(self):
+        left = GirderSide(Flange("Grade 50W", 2.5, 28.0), Flange("HPS Grade 70W", 2.25, 36.0), "Grade 50W", 1.0, 132.0, 4.0, 10.0, True)
+        right = GirderSide(Flange("Grade 50W", 2.5, 30.0), Flange("HPS Grade 70W", 2.25, 36.0), "Grade 50W", 1.0, 132.0, 4.0, 20.0, True)
+        loads = SpliceLoads(29206, 149, 3000, 15, 2800, 14, 13207, 131, 0, -50, 29206, 149)
+        d = _nsba(left, right, loads, 1.0, (1.5, 12.75, 1.5, 28.0, 2), (1.75, 16.75, 1.75, 36.0, 2), 0.625,
+                  (10.0, 138.0, 4.0), (6, 4, 6), 3.0, (1.5, 1.5, 1.5, 1.5), (0.375, 0.25, 3.0))
+        assert (d.top_flange.total_bolts, d.web.total_bolts, d.bottom_flange.total_bolts) == (42, 124, 60)
+        assert d.web.extra["slab_status"] == "NOTICE"
+        # non-composite Hw governs once the slab is over-stressed (workbook 5,437 kip with its 0.84 Fu/Fy)
+        assert d.web.extra["hw_strength"] == pytest.approx(5437.0, rel=0.02)
+        assert d.web.slip_bolts == 124 and d.web.strength_bolts == 88
+
+    def test_example_4_standard_plans_190ft_single_shear_top(self):
+        left = GirderSide(Flange("Grade 50W", 1.0, 20.0), Flange("Grade 50W", 2.0, 22.0), "Grade 50W", 0.625, 80.0, 4.0, 15.5, True)
+        right = GirderSide(Flange("Grade 50W", 1.5, 20.0), Flange("Grade 50W", 2.0, 22.0), "Grade 50W", 0.625, 80.0, 4.0, 8.25, True)
+        loads = SpliceLoads(5240, 43, 1200, 10, 640, 5, 4412, 74, 0, -29, 5240, 43)
+        d = _nsba(left, right, loads, 1.0, (0.625, 9.0, 0.625, 20.0, 1), (1.25, 10.0, 1.25, 22.0, 2), 0.5,
+                  (7.5, 78.0, 4.0), (4, 2, 4), 3.0, (1.5, 1.5, 1.5, 1.5), (0.375, 0.25, 3.0))
+        # top plates differ by 10.5 % -> single shear on the larger apportioned share; workbook web = 28 calculated
+        assert (d.top_flange.total_bolts, d.web.total_bolts, d.bottom_flange.total_bolts) == (16, 28, 28)
+        assert d.top_flange.extra["filler_R"] == pytest.approx(0.75)
+        assert d.web.extra["slab_status"] == "NOTICE"
+        assert d.web.extra["hw_strength"] == pytest.approx(1652.0, rel=0.02)
