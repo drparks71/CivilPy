@@ -280,7 +280,7 @@ class SpliceInput:
     # "nsba" (default): design each flange for its full yield capacity
     # (Fcf = Fyf) with the total force in the plates' shear planes -- the
     # conservative method the two plate-girder validation designs use.
-    # "odot_bdm": the ODOT BDM workbook method -- design stress
+    # "odot_bdm": the pre-9th-edition stress-based method (as used by the ODOT reference design) -- design stress
     # Fcf from the actual factored flange stress (fcf_top/fcf_bot), the 6.8.3
     # net-area hole (nominal + 1/16), and per-plate single-shear bolt counts.
     method: str = "nsba"
