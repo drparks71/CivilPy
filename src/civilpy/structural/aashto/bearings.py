@@ -233,7 +233,7 @@ class MethodABearing:
     def __init__(self, width, length, durometer, internal_t, external_t, steel_t,
                  plys, span, expansion_length, loads, max_dl_delta, max_ll_delta, max_ll_loc, deck_slope, plate_bev,
                  edge_cover=.25, type='rectangular', holes=False, steel_yield_strength = 60, shear_modulus=0.095,
-                 exp_coeff=.000006, temp_min=-30, temp_max=120):
+                 exp_coeff=.000006, temp_min=-30, temp_max=120, rotation_st=None, rotation_cy=None):
         """
         Initialize a Method A elastomeric bearing and compute derived geometry.
 
@@ -290,6 +290,11 @@ class MethodABearing:
         self.deck_slope = deck_slope
         self.plate_bev = plate_bev
         self.temp_range = (temp_min, temp_max)
+        # bearing rotations from the structural analysis (rad), static (dead
+        # load) and cyclic (live load); when given they replace the
+        # deflection/slope proxies in the combined-strain checks (#18/#19).
+        self.rotation_st = rotation_st
+        self.rotation_cy = rotation_cy
         self.get_deflections()
         self.edge_cover = edge_cover
         self.checks = {}
@@ -345,7 +350,10 @@ class MethodABearing:
         # Excel Check '5' (AASHTO 14.7.6.3.3 & 14.7.5.3.6)
         # Uses get_strain_from_stress (inverted power-law, AASHTO Table approach).
         # Alternative: direct formula from AASHTO C14.7.5.3.6 may be more transparent.
-        self.ll_deflection = get_strain_from_stress(self.service_ll, self.internal_shape_factor, self.durometer)
+        # get_strain_from_stress returns the percent strain of Figure
+        # C14.7.6.3.3-1; the deflection is that strain over the elastomer.
+        self.ll_strain = get_strain_from_stress(self.sigma_l, self.durometer, self.internal_shape_factor)
+        self.ll_deflection = self.ll_strain / 100.0 * self.total_elastomer_thickness
 
         if self.ll_deflection <= 0.125:
             self.checks['#5 - LL Deflection < 0.125'] = 1
@@ -354,7 +362,8 @@ class MethodABearing:
             print("LL Deflection Limit Check Failed - LL Deflection > 0.125")
 
         # Excel Check '6' (AASHTO 14.7.6.3.3 & 14.7.5.3.6)
-        self.dl_deflection = get_strain_from_stress(self.service_dl, self.internal_shape_factor, self.durometer)
+        self.dl_strain = get_strain_from_stress(self.service_dl, self.durometer, self.internal_shape_factor)
+        self.dl_deflection = self.dl_strain / 100.0 * self.total_elastomer_thickness
         total_deflection = self.ll_deflection + self.dl_deflection
 
         if total_deflection / self.plys <= .09 * self.internal_t:
@@ -449,14 +458,18 @@ class MethodABearing:
         # Excel Check 18
         gamma_a_st = 1.4 * self.sigma_s / (self.shear_modulus * 8)
         gamma_a_cy = 1.4 * self.sigma_l / (self.shear_modulus * 8)
-        gamma_r_st = 0.5 * (self.length / self.internal_t) ** 2 * abs(
-            (self.dl_deflection / (self.span * 12) + (self.deck_slope) + 0.005) / self.plys)
+        # static rotation: analysis value + the 0.005 rad allowance of
+        # 14.4.2.1, or the legacy proxy (dead-load deflection / span + grade)
+        theta_st = (abs(self.rotation_st) + 0.005 if self.rotation_st is not None
+                    else abs(self.dl_deflection / (self.span * 12) + self.deck_slope) + 0.005)
+        gamma_r_st = 0.5 * (self.length / self.internal_t) ** 2 * theta_st / self.plys
         # AASHTO 14.7.6.3.5: γ_r,cy = 0.5*(L/t_ri)² * θ_L/n
         # θ_L estimated as LL_deflection / ll_location (distance to max LL point, ft→in)
         # Note: AASHTO recommends using the bearing rotation from structural analysis;
         # this approximation may under-predict end rotation for mid-span loading.
-        gamma_r_cy = 0.5 * (self.length / self.internal_t) ** 2 * (abs(self.ll_deflection / (
-                    self.ll_location * 12)) + 0.005) / self.plys
+        theta_cy = (abs(self.rotation_cy) if self.rotation_cy is not None
+                    else abs(self.ll_deflection / (self.ll_location * 12)))
+        gamma_r_cy = 0.5 * (self.length / self.internal_t) ** 2 * theta_cy / self.plys
         gamma_s_st = self.delta_s / self.total_elastomer_thickness
         # γ_s,cy = Δ_cy / h_ri (AASHTO 14.7.6.3.5). For non-sliding (fixed) bearings
         # with no cyclic horizontal deformation, γ_s,cy = 0 is correct per AASHTO.
@@ -476,8 +489,10 @@ class MethodABearing:
             print('Combined Strain Check Failed')
 
         # Excel Check 19
-        gamma_r_st = 0.5 * (self.length / self.internal_t) ** 2 * abs(
-            (self.dl_deflection / (self.span * 12) + (self.deck_slope - self.plate_bev) + 0.005) / self.plys)
+        # with the sole plate bevelled the grade drops out of the static rotation
+        theta_st2 = (abs(self.rotation_st) + 0.005 if self.rotation_st is not None
+                     else abs(self.dl_deflection / (self.span * 12) + (self.deck_slope - self.plate_bev)) + 0.005)
+        gamma_r_st = 0.5 * (self.length / self.internal_t) ** 2 * theta_st2 / self.plys
 
         total_strains = (
                 (gamma_a_st + gamma_r_st + gamma_s_st) + 1.75 * (
