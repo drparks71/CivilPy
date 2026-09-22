@@ -75,7 +75,7 @@ def test_tst_comparison_and_shaft_foundation():
 
 def test_solid_deck_volume_and_roundtrip(tmp_path):
     import json
-    import rhino3dm as r3
+    r3 = pytest.importorskip("rhino3dm")
     from dataclasses import replace
     from civilpy.structural.rhino_bim import emit_to_3dm, emit_to_json
     model = detailed_box_bridge_emit(BoxDetailInput(terminal="type_a"))

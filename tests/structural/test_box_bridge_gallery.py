@@ -3,7 +3,9 @@ import json
 import subprocess
 import sys
 
-import rhino3dm
+import pytest
+
+rhino3dm = pytest.importorskip("rhino3dm")
 
 from civilpy.structural import box_bridge_gallery as gallery
 
