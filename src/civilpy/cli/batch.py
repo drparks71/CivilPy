@@ -52,6 +52,11 @@ def _add_argument(parser: argparse.ArgumentParser, arg: ArgInfo) -> None:
     if arg.positional:
         parser.add_argument(arg.name, metavar=arg.metavar, type=arg.type,
                             choices=arg.choices, help=_help(arg.doc))
+    elif arg.is_bool and arg.flag.startswith("--no-"):
+        # already a negation (--no-ground): 3.14 argparse rejects
+        # BooleanOptionalAction here, and --no-no-ground is meaningless anyway
+        parser.add_argument(arg.flag, dest=arg.name, action="store_true",
+                            default=arg.default, help=_help(arg.doc))
     elif arg.is_bool:
         parser.add_argument(arg.flag, dest=arg.name,
                             action=argparse.BooleanOptionalAction,

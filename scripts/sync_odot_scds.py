@@ -27,13 +27,21 @@ class Links(HTMLParser):
             self.hrefs.extend(v for k, v in attrs if k == "href" and v)
 
 
+def fetch(url: str, timeout: float) -> bytes:
+    # Scraped hrefs feed this; urllib would also honour file:// and others.
+    parts = urlparse(url)
+    if parts.scheme != "https" or parts.hostname != "www.dot.state.oh.us":
+        raise ValueError(f"Refusing non-ODOT URL: {url}")
+    with urlopen(url, timeout=timeout) as response:  # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
+        return response.read()
+
+
 def sync(root: Path, *, refresh: bool = False) -> list[dict]:
     records = []
     for family in ("structural", "roadway", "hydraulic"):
         index = f"https://www.dot.state.oh.us/SCDs/Pages/{family}.aspx"
         parser = Links()
-        with urlopen(index, timeout=60) as response:
-            parser.feed(response.read().decode("utf-8", errors="replace"))
+        parser.feed(fetch(index, 60).decode("utf-8", errors="replace"))
         for url in sorted({urljoin(index, h) for h in parser.hrefs}):
             name = unquote(Path(urlparse(url).path).name)
             # Individual drawings only; exclude complete sets and revision packets.
@@ -44,8 +52,7 @@ def sync(root: Path, *, refresh: bool = False) -> list[dict]:
             path = directory / name
             downloaded = refresh or not path.exists()
             if downloaded:
-                with urlopen(url, timeout=90) as response:
-                    data = response.read()
+                data = fetch(url, 90)
                 if not data.startswith(b"%PDF-"):
                     raise ValueError(f"Not a PDF: {url}")
                 temporary = path.with_suffix(".pdf.part")
@@ -64,8 +71,7 @@ def sync(root: Path, *, refresh: bool = False) -> list[dict]:
     url = "https://www.dot.state.oh.us/PIS/Roadway/GR-3.4%20-%20Bridge%20Terminal%20Assembly,%20Type%204.pdf"
     downloaded = refresh or not path.exists()
     if downloaded:
-        with urlopen(url, timeout=90) as response:
-            data = response.read()
+        data = fetch(url, 90)
         if not data.startswith(b"%PDF-"):
             raise ValueError(f"Not a PDF: {url}")
         path.parent.mkdir(parents=True, exist_ok=True)
