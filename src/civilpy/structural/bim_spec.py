@@ -55,7 +55,10 @@ SCHEMA_VERSION = 1
 #: ``snbi`` = seeded from the inventory columns; ``inferred`` = resolved
 #: through the era-standards registry (the standard-default path) — both
 #: mark records the Tier A campaign populates without a plan in hand.
-SOURCES = ("brr", "plans", "manual", "snbi", "inferred")
+#: ``obm`` = read from an OpenBridge Modeler model; ``gis`` = public GIS
+#: services (TIMS, OGRIP); ``design_file`` = a design deliverable such as
+#: LandXML / OpenRoads geometry.
+SOURCES = ("brr", "plans", "manual", "snbi", "inferred", "obm", "gis", "design_file")
 
 
 def spec_field(default=MISSING, *, unit: str | None = None,
