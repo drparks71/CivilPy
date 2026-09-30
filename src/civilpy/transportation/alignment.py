@@ -18,8 +18,22 @@ Conventions
 * Elevation comes from the vertical profile; when a profile is omitted the
   alignment is flat at ``z = 0``.
 
-Superelevation/cross-slope is not yet applied to offset elevations (offsets
-sit at the centerline profile elevation).
+Horizontal elements are :class:`Tangent`, :class:`Curve` (circular arc) and
+:class:`Spiral` (clothoid: curvature varies linearly with length, for
+entering, exiting and compound transitions).
+
+**Stationing.**  Every geometry method takes the *continuous* station
+``start_station + distance along the alignment``.  Plans may carry
+**station equations** (``station_equations=[(back, ahead), ...]``, each at a
+point on the alignment); :meth:`Alignment.display_station` and
+:meth:`Alignment.continuous_station` convert between the two.
+
+**Cross slope.**  ``superelevation=[(station, left_pct, right_pct), ...]`` is
+interpolated linearly by :meth:`Alignment.cross_slope_at` (positive = rising
+away from the centerline).  It is only applied to offset elevations when
+``point_at(..., apply_cross_slope=True)`` is asked for, so existing callers
+keep centerline-profile elevations.  Runoff/runout design rules are not
+modeled; the table is whatever the design says.
 
 Examples
 --------
@@ -122,6 +136,100 @@ class Curve:
 
 
 @dataclass
+class Spiral:
+    """A clothoid transition of ``length_ft`` whose radius runs from
+    ``radius_start_ft`` to ``radius_end_ft`` (``math.inf`` = tangent), turning
+    ``direction`` ('R' or 'L').
+
+    Curvature ``1/R`` varies linearly with length, so an entering spiral is
+    ``Spiral(L, math.inf, R)``, an exiting spiral ``Spiral(L, R, math.inf)``
+    and a compound transition ``Spiral(L, R1, R2)``.  Both radii may not be
+    infinite.
+    """
+
+    length_ft: float
+    radius_start_ft: float = math.inf
+    radius_end_ft: float = math.inf
+    #: Turn direction looking up-station: ``"R"`` (right) or ``"L"``.
+    direction: Literal["R", "L"] = "R"
+
+    def __post_init__(self):
+        d = str(self.direction).upper()
+        if d not in ("L", "R"):
+            raise ValueError("direction must be 'L' or 'R'")
+        self.direction = d
+        if self.length_ft <= 0.0:
+            raise ValueError("length_ft must be positive")
+        for r in (self.radius_start_ft, self.radius_end_ft):
+            if r <= 0.0:
+                raise ValueError("radii must be positive (math.inf for a tangent)")
+        if math.isinf(self.radius_start_ft) and math.isinf(self.radius_end_ft):
+            raise ValueError("a spiral needs at least one finite radius")
+
+    @property
+    def sign(self) -> int:
+        return 1 if self.direction == "R" else -1
+
+    @property
+    def length(self) -> float:
+        return float(self.length_ft)
+
+    @property
+    def k0(self) -> float:
+        """Curvature (1/ft) at the start."""
+        return 0.0 if math.isinf(self.radius_start_ft) else 1.0 / self.radius_start_ft
+
+    @property
+    def k1(self) -> float:
+        """Curvature (1/ft) at the end."""
+        return 0.0 if math.isinf(self.radius_end_ft) else 1.0 / self.radius_end_ft
+
+    def turn_rad(self, s: float) -> float:
+        """Unsigned heading change (radians) over the first ``s`` feet."""
+        return self.k0 * s + (self.k1 - self.k0) * s * s / (2.0 * self.length)
+
+    @property
+    def delta_deg(self) -> float:
+        """Total (unsigned) deflection of the spiral, degrees."""
+        return math.degrees(self.turn_rad(self.length))
+
+
+# 16-point Gauss-Legendre nodes/weights on [-1, 1]: exact for polynomials of
+# degree 31, so a clothoid's (sin, cos) of a quadratic heading integrates to
+# ~1e-12 relative for any practical spiral in one pass.
+_GL_X, _GL_W = None, None
+
+
+def _gauss_legendre():
+    global _GL_X, _GL_W
+    if _GL_X is None:
+        import numpy as np
+
+        _GL_X, _GL_W = np.polynomial.legendre.leggauss(16)
+    return _GL_X, _GL_W
+
+
+def _spiral_offset(el: "Spiral", az0_deg: float, s: float) -> tuple[float, float]:
+    """Plan displacement (dx, dy) after ``s`` feet of spiral ``el`` from
+    azimuth ``az0_deg``: the integral of the unit direction over [0, s]."""
+    if s <= 0.0:
+        return 0.0, 0.0
+    xs, ws = _gauss_legendre()
+    a0 = math.radians(az0_deg)
+    n = max(1, int(math.ceil(s / 500.0)))      # split very long spirals
+    h = s / n
+    dx = dy = 0.0
+    for k in range(n):
+        lo = k * h
+        for x, w in zip(xs, ws):
+            t = lo + (x + 1.0) * h / 2.0
+            a = a0 + el.sign * el.turn_rad(t)
+            dx += w * math.sin(a) * h / 2.0
+            dy += w * math.cos(a) * h / 2.0
+    return dx, dy
+
+
+@dataclass
 class VerticalProfile:
     """Elevation as a function of station from a list of PVIs.
 
@@ -178,25 +286,37 @@ class Alignment:
         Plan ``(x, y)`` of the alignment start, feet.
     start_bearing_deg : float
         Azimuth of increasing station at the start (deg, cw from North).
-    elements : list[Tangent | Curve]
+    elements : list[Tangent | Curve | Spiral]
         Ordered horizontal elements laid head to tail.
     profile : VerticalProfile, optional
         Vertical profile; when omitted the alignment is flat at ``z = 0``.
     start_station_ft : float
         Station value at ``start_point``.
+    station_equations : list[(back_ft, ahead_ft)], optional
+        Station equations in order along the alignment.  ``back`` is the
+        displayed station arriving at the equation point, ``ahead`` the
+        displayed station leaving it.
+    superelevation : list[(station_ft, left_pct, right_pct)], optional
+        Cross slopes by continuous station, interpolated linearly.
     """
 
     def __init__(self, start_point: tuple[float, float],
                  start_bearing_deg: float,
                  elements: list,
                  profile: VerticalProfile | None = None,
-                 start_station_ft: float = 0.0):
+                 start_station_ft: float = 0.0,
+                 station_equations: list[tuple[float, float]] | None = None,
+                 superelevation: list[tuple[float, float, float]] | None = None):
         self.start_point = (float(start_point[0]), float(start_point[1]))
         self.start_bearing = float(start_bearing_deg)
         self.elements = list(elements)
         self.profile = profile
         self.start_station = float(start_station_ft)
+        self.station_equations = [(float(b), float(a)) for b, a in (station_equations or [])]
+        self.superelevation = sorted((float(s), float(lft), float(rt))
+                                     for s, lft, rt in (superelevation or []))
         self._segments = self._build()
+        self._equation_table = self._build_equations()
 
     # -- construction from survey points -----------------------------------
 
@@ -284,6 +404,10 @@ class Alignment:
                 seg["cx"], seg["cy"] = cx, cy
                 az = az + el.sign * el.delta_deg
                 x, y = self._arc_point(cx, cy, az, el)
+            elif isinstance(el, Spiral):
+                dx, dy = _spiral_offset(el, az, el.length)
+                x, y = x + dx, y + dy
+                az = az + el.sign * el.delta_deg
             else:
                 raise TypeError(f"unknown alignment element: {el!r}")
             seg["x1"], seg["y1"], seg["az1"] = x, y, az
@@ -331,6 +455,17 @@ class Alignment:
         if isinstance(el, Tangent):
             dx, dy = _dir(seg["az0"])
             return seg["x0"] + dx * s, seg["y0"] + dy * s, seg["az0"]
+        if isinstance(el, Spiral):
+            if s >= el.length:                     # extrapolate past the end on its tangent
+                dx, dy = _dir(seg["az1"])
+                over = s - el.length
+                return seg["x1"] + dx * over, seg["y1"] + dy * over, seg["az1"]
+            if s <= 0.0:
+                dx, dy = _dir(seg["az0"])
+                return seg["x0"] + dx * s, seg["y0"] + dy * s, seg["az0"]
+            dx, dy = _spiral_offset(el, seg["az0"], s)
+            return (seg["x0"] + dx, seg["y0"] + dy,
+                    seg["az0"] + el.sign * math.degrees(el.turn_rad(s)))
         az = seg["az0"] + el.sign * math.degrees(s / el.radius_ft)
         px, py = self._arc_point(seg["cx"], seg["cy"], az, el)
         return px, py, az
@@ -346,13 +481,78 @@ class Alignment:
         return self.profile.elevation_at(station_ft)
 
     def point_at(self, station_ft: float,
-                 offset_ft: float = 0.0) -> tuple[float, float, float]:
+                 offset_ft: float = 0.0,
+                 apply_cross_slope: bool = False) -> tuple[float, float, float]:
         """3D point at ``(station, offset)``.  Positive offset is to the right
-        of increasing station; elevation is the centerline profile elevation."""
+        of increasing station; elevation is the centerline profile elevation,
+        plus the cross slope on that side when ``apply_cross_slope``."""
         x, y, az = self._on_point(station_ft)
         rx, ry = _right(az)
-        return (x + rx * offset_ft, y + ry * offset_ft,
-                self.elevation_at(station_ft))
+        z = self.elevation_at(station_ft)
+        if apply_cross_slope and offset_ft:
+            left, right = self.cross_slope_at(station_ft)
+            z += abs(offset_ft) * (right if offset_ft > 0 else left) / 100.0
+        return (x + rx * offset_ft, y + ry * offset_ft, z)
+
+    def cross_slope_at(self, station_ft: float) -> tuple[float, float]:
+        """(left_pct, right_pct) at ``station`` from the superelevation table
+        (linear between entries, held flat past the ends; (0, 0) when empty)."""
+        tab = self.superelevation
+        if not tab:
+            return 0.0, 0.0
+        if station_ft <= tab[0][0]:
+            return tab[0][1], tab[0][2]
+        if station_ft >= tab[-1][0]:
+            return tab[-1][1], tab[-1][2]
+        for (s0, l0, r0), (s1, l1, r1) in zip(tab, tab[1:]):
+            if s0 <= station_ft <= s1:
+                f = 0.0 if s1 == s0 else (station_ft - s0) / (s1 - s0)
+                return l0 + f * (l1 - l0), r0 + f * (r1 - r0)
+        return tab[-1][1], tab[-1][2]
+
+    # -- station equations -------------------------------------------------
+
+    def _build_equations(self) -> list[tuple[float, float, float]]:
+        """[(continuous_start, display_start, display_end)] per stationing region."""
+        regions = []
+        cont = self.start_station
+        disp = self.start_station
+        for back, ahead in self.station_equations:
+            if back < disp:
+                raise ValueError(f"station equation back {back} precedes the region start {disp}")
+            cont_eq = cont + (back - disp)
+            regions.append((cont, disp, back))
+            cont, disp = cont_eq, ahead
+        regions.append((cont, disp, disp + (self.end_station - cont)))
+        return regions
+
+    def display_station(self, station_ft: float) -> tuple[float, int]:
+        """(displayed station, region index) for a continuous station.
+
+        Region 0 runs from the start to the first equation, region ``i`` from
+        equation ``i`` onward.  At an equation point the ahead region wins."""
+        regions = self._equation_table
+        for i in range(len(regions) - 1, -1, -1):
+            c0, d0, _ = regions[i]
+            if station_ft >= c0 or i == 0:
+                return d0 + (station_ft - c0), i
+        return station_ft, 0                         # unreachable
+
+    def continuous_station(self, display_ft: float, region: int | None = None) -> float:
+        """Continuous station for a displayed station.
+
+        With overlapping stationing a displayed value can occur in several
+        regions; pass ``region`` then (``ValueError`` if ambiguous or absent)."""
+        regions = self._equation_table
+        if region is not None:
+            c0, d0, _ = regions[region]
+            return c0 + (display_ft - d0)
+        hits = [c0 + (display_ft - d0) for c0, d0, d1 in regions if d0 <= display_ft <= d1]
+        if len(hits) == 1:
+            return hits[0]
+        if not hits:
+            raise ValueError(f"displayed station {display_ft} is not on this alignment")
+        raise ValueError(f"displayed station {display_ft} occurs in {len(hits)} regions; pass region=")
 
     def frame_at(self, station_ft: float) -> dict:
         """Local frame at ``station``: ``point`` (x, y, z), unit ``tangent``
@@ -395,6 +595,8 @@ class Alignment:
             t = max(0.0, min(el.length, t))
             fx, fy = seg["x0"] + dx * t, seg["y0"] + dy * t
             return seg["s0"] + t, math.hypot(qx - fx, qy - fy)
+        if isinstance(el, Spiral):
+            return self._closest_on_spiral(seg, qx, qy)
         # arc: measure angular progress in the travel direction, then test the
         # interior projection and both endpoints and keep the nearest.
         cx, cy = seg["cx"], seg["cy"]
@@ -413,6 +615,31 @@ class Alignment:
             if best is None or dist < best[1]:
                 best = (seg["s0"] + s, dist)
         return best
+
+    def _closest_on_spiral(self, seg: dict, qx: float, qy: float) -> tuple[float, float]:
+        """Nearest point on a spiral: coarse sampling, then golden-section refine."""
+        el = seg["el"]
+
+        def dist(s):
+            px, py, _ = self._on_point(seg["s0"] + s)
+            return math.hypot(qx - px, qy - py)
+
+        n = 64
+        samples = [el.length * i / n for i in range(n + 1)]
+        i_best = min(range(n + 1), key=lambda i: dist(samples[i]))
+        lo = samples[max(0, i_best - 1)]
+        hi = samples[min(n, i_best + 1)]
+        g = (math.sqrt(5.0) - 1.0) / 2.0
+        a, b = lo, hi
+        c, d = b - g * (b - a), a + g * (b - a)
+        for _ in range(80):
+            if dist(c) < dist(d):
+                b = d
+            else:
+                a = c
+            c, d = b - g * (b - a), a + g * (b - a)
+        s = (a + b) / 2.0
+        return seg["s0"] + s, dist(s)
 
     def __repr__(self):
         return (f"Alignment(start_sta={station_str(self.start_station)}, "
