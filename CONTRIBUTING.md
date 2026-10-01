@@ -41,9 +41,13 @@ documentation. The git history is frequently wiped at the maintainers discretion
 
 You will need Python 3.11+ and git installed.
 
+CivilPy lives on a self-hosted GitLab at [daneparks.com](https://daneparks.com/Dane/civilpy) and is
+mirrored to [GitHub](https://github.com/drparks71/CivilPy). If you don't have a daneparks.com account,
+fork the GitHub repository and work from your fork:
+
 ```bash
-git clone https://daneparks.com/Dane/civilpy.git
-cd civilpy
+git clone https://github.com/<your-username>/CivilPy.git
+cd CivilPy
 pip install -e ".[db,geo,web,jupyter,validation]"
 ```
 
@@ -77,10 +81,22 @@ If you added a new module, check that the import works cleanly:
 python -c "import civilpy"
 ```
 
-### 5. Submit a merge request
+### 5. Submit a pull request
 
-Open a merge request on the [CivilPy repository](https://daneparks.com/Dane/civilpy) with a clear
-description of what changed and why. Reference any relevant issue numbers.
+Open a pull request against `master` on [GitHub](https://github.com/drparks71/CivilPy/pulls), or a
+merge request on [GitLab](https://daneparks.com/Dane/civilpy) if you have an account there. Give a
+clear description of what changed and why, and reference any relevant issue numbers.
+
+GitHub is a read-only mirror, so accepted pull requests are merged on GitLab and arrive on GitHub
+through the mirror. Expect the following:
+
+- Tests run on GitLab CI, not GitHub. The maintainer runs them once your branch is pulled in.
+- Your commits may be squashed or rebased when merged. When that happens the pull request is closed
+  with a link to the commit that landed rather than shown as "merged".
+- Keep your branch based on the current `master`. Because history may be rewritten (see
+  Attribution), rebase onto a fresh `master` if your branch stops applying cleanly.
+
+Everything below that says "merge request" applies equally to a GitHub pull request.
 
 ---
 
@@ -163,7 +179,8 @@ Disclose AI assistance in your merge request description if it was used substant
 
 ## Reporting Issues
 
-Open an issue on the [issue tracker](https://daneparks.com/Dane/civilpy/issues). Include:
+Open an issue on [GitHub](https://github.com/drparks71/CivilPy/issues) or the
+[GitLab issue tracker](https://daneparks.com/Dane/civilpy/issues). Include:
 
 - What you were trying to do
 - What happened instead
