@@ -14,7 +14,7 @@ attrs==25.1.0
     #   trio
 bcrypt==5.0.0
     # via paramiko
-beautifulsoup4==4.13.3
+beautifulsoup4==4.15.0
     # via
     #   civilpy
     #   nbconvert
