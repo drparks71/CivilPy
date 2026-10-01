@@ -31,7 +31,8 @@ from pathlib import Path
 
 #: LiDAR tile index (statewide OSIP + 3DEP flights).  Fields per feature:
 #: ``TileName``, ``County`` (portal directory name), ``Year``, ``Block``,
-#: ``note`` ("OSIP" | "3DEP").  Native SR is EPSG:6549, so queries must
+#: ``note`` ("OSIP" | "3DEP").  Native SR is EPSG:6549 (NAD83(2011) / Ohio North,
+#: US survey ft, statewide extent), so queries must
 #: declare their input SR explicitly.
 OSIP_TILE_SERVICES = {
     "3DEP": "https://maps.ohio.gov/arcgis/rest/services/OGRIP/3DepTiles/MapServer/0",
@@ -100,7 +101,7 @@ def find_las_tiles(bbox_wgs84, service="3DEP"):
     params = {
         "geometry": f"{xmin},{ymin},{xmax},{ymax}",
         "geometryType": "esriGeometryEnvelope",
-        "inSR": "4326",           # layer's native SR is EPSG:6549 (OH South ft)
+        "inSR": "4326",           # layer's native SR is EPSG:6549 (OH North ftUS)
         "spatialRel": "esriSpatialRelIntersects",
         "outFields": "*",
         "returnGeometry": "false",
