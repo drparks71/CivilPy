@@ -466,6 +466,8 @@ full = [
     { name = "pydantic-core", version = "2.46.5", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.14'" },
     { name = "pygmsh" },
     { name = "pymupdf" },
+    { name = "pyproj", version = "3.7.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "pyproj", version = "3.7.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "pytesseract" },
     { name = "python-dotenv" },
     { name = "rhino3dm" },
@@ -479,6 +481,8 @@ full = [
 ]
 geo = [
     { name = "folium" },
+    { name = "pyproj", version = "3.7.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "pyproj", version = "3.7.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "tifftools" },
 ]
 jupyter = [
@@ -560,6 +564,7 @@ requires-dist = [
     { name = "pydantic-core", marker = "extra == 'validation'", specifier = ">=2.0" },
     { name = "pygmsh", marker = "extra == 'fem'", specifier = ">=7.1" },
     { name = "pymupdf", marker = "extra == 'pdf'", specifier = ">=1.23" },
+    { name = "pyproj", marker = "extra == 'geo'", specifier = ">=3.6" },
     { name = "pyproj", marker = "extra == 'lidar'", specifier = ">=3.6" },
     { name = "pytesseract", marker = "extra == 'ai'", specifier = ">=0.3" },
     { name = "pytesseract", marker = "extra == 'pdf'", specifier = ">=0.3" },

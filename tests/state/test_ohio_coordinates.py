@@ -10,6 +10,8 @@ import random
 
 import pytest
 
+pytest.importorskip("pyproj")
+
 from civilpy.state.ohio import coordinates as oc
 
 COUNTIES = sorted(oc.ZONES)

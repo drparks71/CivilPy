@@ -26,6 +26,7 @@ camelot-py==2.0.0
     # via civilpy
 certifi==2025.1.31
     # via
+    #   pyproj
     #   requests
     #   selenium
 cffi==2.0.0 ; implementation_name == 'pypy' or os_name == 'nt' or platform_python_implementation != 'PyPy'
@@ -340,6 +341,10 @@ pyparsing==3.3.2
     #   matplotlib
 pypdfium2==5.7.1
     # via camelot-py
+pyproj==3.7.1 ; python_full_version < '3.11'
+    # via civilpy
+pyproj==3.7.2 ; python_full_version >= '3.11'
+    # via civilpy
 pysocks==1.7.1
     # via urllib3
 pytesseract==0.3.13
