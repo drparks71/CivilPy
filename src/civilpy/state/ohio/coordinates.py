@@ -25,9 +25,12 @@ Errata found while checking every zone against its Section 2103 test point
 
 * Geauga (GEA): scale printed ``1.00042``; ``1.000042`` reproduces the test
   point exactly (every other zone is 1.0000xx).  Corrected below.
-* Marion (MAR): parameters look regular but the test point misses by
-  0.036 m in easting.  Unresolved until ODOT's published PRJ file is
-  checked; the zone is kept as printed.
+* Marion (MAR): the test point misses by 0.036 m in easting while ODOT's
+  published Marion.prj matches the Section 2102 parameters - the error is
+  in the printed test point, not the zone.
+
+All 88 zones were checked against ODOT's published OCCS PRJ files
+(OCCS-PRJ.zip, 2026-10-01): projection, origin, scale, false N/E all match.
 * Published PPM at the Morgan (MRG), Williams (WIL) and Gallia (GAL) test
   points differ from point scale x elevation factor by 4-6 ppm (median
   across all zones: 0.04 ppm); likely height or PPM typos, unresolved.
