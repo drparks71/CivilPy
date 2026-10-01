@@ -10,6 +10,11 @@
 #   - include: [{local: .gitlab/security.gitlab-ci.yml}]
 #   - repos with tag-selected runners: override each sec:* job with tags: [docker]
 #
+# Artifacts are access: developer - on a public project the scan output
+# (SBOM, findings, secret locations) would otherwise be downloadable by anyone.
+# Job logs stay public when the project has "Public pipelines" on, so scanners
+# must not print secret values (trivy redacts them).
+#
 # Optional CI/CD variable (Settings > CI/CD > Variables, masked):
 #   EVIDENCE_PUSH_TOKEN — project access token with write_repository on
 #   Dane/compliance-evidence; enables evidence:publish.
@@ -41,6 +46,7 @@ sec:sbom:
     - mkdir -p evidence
     - syft scan dir:. --source-name "$CI_PROJECT_NAME" -o cyclonedx-json=evidence/sbom.cdx.json -o table
   artifacts:
+    access: developer # scan output is evidence, not public - see header
     paths: [evidence/]
     expire_in: 6 months
 
@@ -57,6 +63,7 @@ sec:sca:
     - grype sbom:evidence/sbom.cdx.json --add-cpes-if-none -o json --file evidence/grype.json
     - grype sbom:evidence/sbom.cdx.json --add-cpes-if-none -o table --fail-on critical
   artifacts:
+    access: developer # scan output is evidence, not public - see header
     when: always
     paths: [evidence/]
     expire_in: 6 months
@@ -80,6 +87,7 @@ sec:pip-audit:
     - pip-audit -r /tmp/reqs.txt --disable-pip --no-deps -f json -o evidence/pip-audit.json || true
     - pip-audit -r /tmp/reqs.txt --disable-pip --no-deps
   artifacts:
+    access: developer # scan output is evidence, not public - see header
     when: always
     paths: [evidence/]
     expire_in: 6 months
@@ -109,6 +117,7 @@ sec:npm-audit:
       done
       exit $status
   artifacts:
+    access: developer # scan output is evidence, not public - see header
     when: always
     paths: [evidence/]
     expire_in: 6 months
@@ -130,6 +139,7 @@ sec:sast:
     - grep -E "Targets scanned:[[:space:]]*[1-9]" evidence/semgrep.log || { echo "SAST scanned zero files — job misconfigured, not clean"; exit 1; }
     - semgrep scan $SEMGREP_CONFIGS --metrics=off --error "$CI_PROJECT_DIR"
   artifacts:
+    access: developer # scan output is evidence, not public - see header
     when: always
     paths: [evidence/]
     expire_in: 6 months
@@ -150,6 +160,7 @@ sec:trivy:
     - trivy fs --scanners secret,license,misconfig --license-full --skip-dirs "$TRIVY_SKIP" --timeout 15m --format json --output evidence/trivy.json .
     - trivy fs --scanners secret,misconfig --skip-dirs "$TRIVY_SKIP" --timeout 15m --exit-code 1 .
   artifacts:
+    access: developer # scan output is evidence, not public - see header
     when: always
     paths: [evidence/]
     expire_in: 6 months
