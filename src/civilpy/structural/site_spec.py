@@ -366,6 +366,8 @@ class BridgeAlternativeRecord(ElementRecord):
             out.append("supports: stations must strictly increase")
         if self.supports[0].kind != "abutment" or self.supports[-1].kind != "abutment":
             out.append("supports: the first and last supports must be abutments")
+        for i, sup in enumerate(self.supports):
+            out += [f"supports[{i}].{e}" for e in sup.validate()]
         try:
             from civilpy.structural.bridge_type import get_type
             get_type(self.superstructure)
