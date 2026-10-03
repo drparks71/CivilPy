@@ -303,3 +303,77 @@ class BridgeSiteRecord(ElementRecord):
         if self.begin_station_ft < al.start_station - tol or self.end_station_ft > al.end_station + tol:
             out.append("begin/end stations: outside the alignment")
         return out
+
+
+# ── structure type study: alternatives on a site ─────────────────────────
+
+SUPPORT_KINDS = ("abutment", "pier")
+ABUTMENT_UNIT_TYPES = ("seat", "semi_integral", "integral")
+PIER_UNIT_TYPES = ("cap_and_column", "hammerhead", "pile_bent", "wall")
+
+
+@dataclass(frozen=True)
+class SupportLineRecord(SpecRecord):
+    """A support line of a bridge alternative: where (continuous station on
+    the site alignment), how (skew, degrees, positive ahead-left) and what
+    (the substructure unit type).  OBM's SupportLine + its Pier/Abutment."""
+
+    station_ft: float = spec_field(unit="ft", desc="continuous station on the site alignment")
+    kind: str = spec_field(enum=SUPPORT_KINDS)
+    unit_type: str = spec_field(enum=ABUTMENT_UNIT_TYPES + PIER_UNIT_TYPES)
+    skew_deg: float = spec_field(0.0, unit="deg", desc="support line skew from the normal, + ahead-left")
+    name: str | None = spec_field(None)
+
+    def _cross_validate(self) -> list[str]:
+        out = []
+        allowed = ABUTMENT_UNIT_TYPES if self.kind == "abutment" else PIER_UNIT_TYPES
+        if self.unit_type not in allowed:
+            out.append(f"unit_type: {self.unit_type!r} is not a {self.kind} type {allowed}")
+        if abs(self.skew_deg) >= 60.0:
+            out.append("skew_deg: must be below 60")
+        return out
+
+
+@dataclass(frozen=True)
+class BridgeAlternativeRecord(ElementRecord):
+    """One alternative of a Structure Type Study (ODOT BDM 201.1): a
+    superstructure type (``civilpy.structural.bridge_type`` catalog key), a
+    deck width and the support lines, on a site alignment.  Spans, unit
+    heights, quantities and cost are derived from this record and the site;
+    this is what the OBM writer builds the bridge from."""
+
+    BIM_TYPE = "bridge"
+    SUBTYPE = "alternative"
+
+    label: str = spec_field()
+    superstructure: str = spec_field(desc="bridge_type catalog key, e.g. ps_i_girder")
+    deck_width_ft: float = spec_field(unit="ft", gt=0.0, desc="out-to-out")
+    supports: tuple[SupportLineRecord, ...] = spec_field(())
+    alignment_name: str | None = spec_field(None, desc="site alignment the stations refer to")
+    girder_spacing_ft: float | None = spec_field(None, unit="ft")
+    deck_thickness_in: float | None = spec_field(None, unit="in", desc="None = BDM 309.3.1 minimum for the spacing")
+    railing: str = spec_field("SBR-1-20", desc="bridge railing SCD")
+    notes: str = spec_field("")
+    provenance: Provenance = spec_field(Provenance())
+
+    def _cross_validate(self) -> list[str]:
+        out = []
+        if len(self.supports) < 2:
+            out.append("supports: an alternative needs two supports at least")
+            return out
+        sts = [s.station_ft for s in self.supports]
+        if any(b <= a for a, b in zip(sts, sts[1:])):
+            out.append("supports: stations must strictly increase")
+        if self.supports[0].kind != "abutment" or self.supports[-1].kind != "abutment":
+            out.append("supports: the first and last supports must be abutments")
+        try:
+            from civilpy.structural.bridge_type import get_type
+            get_type(self.superstructure)
+        except Exception as exc:  # noqa: BLE001
+            out.append(f"superstructure: {exc}")
+        return out
+
+    @property
+    def spans_ft(self) -> tuple[float, ...]:
+        sts = [s.station_ft for s in self.supports]
+        return tuple(b - a for a, b in zip(sts, sts[1:]))

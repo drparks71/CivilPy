@@ -123,3 +123,27 @@ def test_pvi_record_keeps_unsymmetrical_halves():
     again = rec.to_alignment()
     for s in range(0, 1501, 25):
         assert abs(again.profile.elevation_at(s) - prof.elevation_at(s)) < 1e-9
+
+
+def test_bridge_alternative_record_validates_and_round_trips():
+    from civilpy.structural.site_spec import BridgeAlternativeRecord, SupportLineRecord
+
+    sup = (SupportLineRecord(639.0, "abutment", "semi_integral", 15.0, "Rear Abutment"),
+           SupportLineRecord(965.5, "pier", "cap_and_column", 15.0, "Pier 1"),
+           SupportLineRecord(1292.0, "pier", "hammerhead", 15.0, "Pier 2"),
+           SupportLineRecord(1618.0, "abutment", "seat", 15.0, "Forward Abutment"))
+    rec = BridgeAlternativeRecord(label="PS I 3 span", superstructure="ps_i_girder", deck_width_ft=44.0,
+                                  supports=sup, alignment_name="CLX_S007")
+    assert rec.validate(strict=True) == []
+    assert rec.spans_ft == (326.5, 326.5, 326.0)
+    d = rec.to_dict()
+    assert d["bim.type"] == "bridge" and d["subtype"] == "alternative"
+    again = BridgeAlternativeRecord.from_dict(d)
+    assert again == rec
+
+    bad = BridgeAlternativeRecord(label="x", superstructure="nope", deck_width_ft=0.0,
+                                  supports=(SupportLineRecord(0.0, "pier", "seat"),
+                                            SupportLineRecord(-1.0, "abutment", "seat", 70.0)))
+    errs = " ".join(bad.validate())
+    for word in ("deck_width_ft", "strictly increase", "abutments", "superstructure", "not a pier type", "skew_deg"):
+        assert word in errs, (word, errs)
