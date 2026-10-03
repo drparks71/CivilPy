@@ -123,7 +123,23 @@ class CrossSlopeRecord(SpecRecord):
 class PVIRecord(SpecRecord):
     station_ft: float = spec_field(unit="ft")
     elevation_ft: float = spec_field(unit="ft")
-    curve_length_ft: float = spec_field(0.0, unit="ft", ge=0.0, desc="symmetric parabola; 0 = none")
+    curve_length_ft: float = spec_field(0.0, unit="ft", ge=0.0, desc="parabola length (both halves); 0 = none")
+    curve_length_in_ft: float = spec_field(0.0, unit="ft", ge=0.0,
+                                           desc="unsymmetrical parabola: BVC to PVI; 0 = symmetric")
+    curve_length_out_ft: float = spec_field(0.0, unit="ft", ge=0.0,
+                                            desc="unsymmetrical parabola: PVI to EVC; 0 = symmetric")
+
+    def as_pvi(self) -> tuple[float, ...]:
+        """The tuple :class:`~civilpy.transportation.alignment.VerticalProfile` takes."""
+        if self.curve_length_in_ft > 0.0 or self.curve_length_out_ft > 0.0:
+            return (self.station_ft, self.elevation_ft, self.curve_length_in_ft, self.curve_length_out_ft)
+        return (self.station_ft, self.elevation_ft, self.curve_length_ft)
+
+    @classmethod
+    def from_pvi(cls, station_ft: float, elevation_ft: float, len_in_ft: float, len_out_ft: float) -> "PVIRecord":
+        if abs(len_in_ft - len_out_ft) > 1e-9:
+            return cls(station_ft, elevation_ft, len_in_ft + len_out_ft, len_in_ft, len_out_ft)
+        return cls(station_ft, elevation_ft, len_in_ft + len_out_ft)
 
 
 @dataclass(frozen=True)
@@ -201,8 +217,7 @@ class AlignmentRecord(ElementRecord):
 
         profile = None
         if self.profile is not None:
-            profile = VerticalProfile([(p.station_ft, p.elevation_ft, p.curve_length_ft)
-                                       for p in self.profile.pvis])
+            profile = VerticalProfile([p.as_pvi() for p in self.profile.pvis])
         return Alignment((self.start_easting_ft, self.start_northing_ft), self.start_bearing_deg,
                          [_record_to_element(e) for e in self.elements], profile=profile,
                          start_station_ft=self.start_station_ft,
@@ -215,7 +230,9 @@ class AlignmentRecord(ElementRecord):
         ``coordinate_system``, ``source_ref``, ``provenance``) via kwargs."""
         profile = None
         if alignment.profile is not None:
-            profile = ProfileRecord(pvis=tuple(PVIRecord(s, e, L) for s, e, L in alignment.profile.pvis))
+            profile = ProfileRecord(pvis=tuple(PVIRecord.from_pvi(s, e, l_in, l_out)
+                                               for (s, e, _), (l_in, l_out)
+                                               in zip(alignment.profile.pvis, alignment.profile.pvi_lengths)))
         return cls(name=name,
                    start_easting_ft=alignment.start_point[0],
                    start_northing_ft=alignment.start_point[1],

@@ -13,8 +13,8 @@ alignments move between civilpy and those programs.  Covered:
 * ``CoordGeom``: ``Line``, ``Curve`` (circular), ``Spiral`` (clothoid; other
   ``spiType`` values are rejected rather than approximated);
 * ``StaEquation`` (``staBack``, ``staAhead``, ``staInternal``);
-* ``Profile/ProfAlign``: ``PVI`` and symmetric ``ParaCurve`` (an
-  ``UnsymParaCurve`` is rejected);
+* ``Profile/ProfAlign``: ``PVI``, symmetric ``ParaCurve`` and
+  ``UnsymParaCurve`` (``lengthIn`` / ``lengthOut``);
 * units: ``Imperial`` (``USSurveyFoot`` / ``foot`` / ``internationalFoot``)
   or ``Metric`` (``meter``); civilpy alignments are in feet, so metric files
   are converted on read, and ``units=`` picks what is written.
@@ -180,7 +180,7 @@ def _profile(align_el, f):
         elif kind == "ParaCurve":
             pvis.append((vals[0] * f, vals[1] * f, float(p.get("length")) * f))
         elif kind == "UnsymParaCurve":
-            raise ValueError("unsymmetrical vertical curves are not supported")
+            pvis.append((vals[0] * f, vals[1] * f, float(p.get("lengthIn")) * f, float(p.get("lengthOut")) * f))
         elif kind == "CircCurve":
             raise ValueError("circular vertical curves are not supported")
     return VerticalProfile(pvis) if len(pvis) >= 2 else None
@@ -289,8 +289,10 @@ def write_alignments(alignments: dict[str, Alignment], target, *, units: str = "
                                                "staInternal": _fmt(c0 * g)})
         if al.profile is not None:
             pa = _WET.SubElement(_WET.SubElement(a, "Profile"), "ProfAlign", {"name": f"{name} profile"})
-            for sta, elev, length in al.profile.pvis:
-                if length > 0.0:
+            for (sta, elev, length), (l_in, l_out) in zip(al.profile.pvis, al.profile.pvi_lengths):
+                if length > 0.0 and abs(l_in - l_out) > 1e-9:
+                    p = _WET.SubElement(pa, "UnsymParaCurve", {"lengthIn": _fmt(l_in * g), "lengthOut": _fmt(l_out * g)})
+                elif length > 0.0:
                     p = _WET.SubElement(pa, "ParaCurve", {"length": _fmt(length * g)})
                 else:
                     p = _WET.SubElement(pa, "PVI")

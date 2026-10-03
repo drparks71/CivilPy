@@ -89,3 +89,55 @@ def test_curve_plots_return_figures():
                 HorizontalCurve(800.0, 45.0, 2000.0).plot()):
         assert fig is not None
         plt.close(fig)
+
+
+# ── unsymmetrical vertical curves ─────────────────────────────────────────
+
+import pytest as _pt
+
+from civilpy.transportation.curves import UnsymmetricalVerticalCurve as _UVC
+from civilpy.transportation.curves import VerticalCurve as _VC
+
+
+@_pt.mark.parametrize("g1, g2, l1, l2", [(3.0, -2.0, 300.0, 500.0), (-4.0, 1.5, 600.0, 200.0),
+                                          (2.0, 5.0, 150.0, 450.0), (-1.0, -3.0, 400.0, 400.0)])
+def test_unsymmetrical_curve_geometry(g1, g2, l1, l2):
+    vc = _UVC(g1, g2, l1, l2, pvi_station_ft=1000.0, pvi_elevation_ft=500.0)
+    # ends on the tangents, slopes continuous there
+    assert vc.bvc_station == 1000.0 - l1 and vc.evc_station == 1000.0 + l2
+    assert abs(vc.elevation_at(vc.bvc_station) - (500.0 - g1 / 100 * l1)) < 1e-9
+    assert abs(vc.elevation_at(vc.evc_station) - (500.0 + g2 / 100 * l2)) < 1e-9
+    assert abs(vc.grade_at(vc.bvc_station + 1e-9) - g1) < 1e-6 and abs(vc.grade_at(vc.evc_station - 1e-9) - g2) < 1e-6
+    # the two parabolas meet at the PVI station with a common tangent
+    left, right = vc.elevation_at(1000.0 - 1e-7), vc.elevation_at(1000.0 + 1e-7)
+    assert abs(left - right) < 1e-6 and abs(vc.grade_at(1000.0 - 1e-7) - vc.grade_at(1000.0 + 1e-7)) < 1e-5
+    # textbook external distance from the PVI: A L1 L2 / (2 (L1 + L2))
+    a = (g2 - g1) / 100.0
+    assert abs(vc.elevation_at(1000.0) - (500.0 + a * l1 * l2 / (2 * (l1 + l2)))) < 1e-9
+    # grade is linear on each half and the second derivative has the sign of A
+    xs = [vc.bvc_station + k * l1 / 10 for k in range(11)]
+    gr = [vc.grade_at(x) for x in xs]
+    d = [b - a_ for a_, b in zip(gr, gr[1:])]
+    assert all(abs(x - d[0]) < 1e-9 for x in d) and (d[0] < 0) == (g2 < g1)
+
+
+def test_unsymmetrical_with_equal_halves_is_the_equal_tangent_curve():
+    u = _UVC(2.0, -3.0, 250.0, 250.0, 2000.0, 700.0)
+    s = _VC(2.0, -3.0, 500.0, 2000.0, 700.0)
+    for x in range(1700, 2301, 25):
+        assert abs(u.elevation_at(x) - s.elevation_at(x)) < 1e-9
+        assert abs(u.grade_at(x) - s.grade_at(x)) < 1e-9
+    assert u.high_low_point() is not None and abs(u.high_low_point()[0] - s.high_low_point()[0]) < 1e-9
+
+
+def test_unsymmetrical_high_point_on_either_half():
+    crest_left = _UVC(1.0, -6.0, 400.0, 200.0, 1000.0, 100.0)       # turns over before the PVI
+    crest_right = _UVC(6.0, -1.0, 200.0, 400.0, 1000.0, 100.0)      # turns over after the PVI
+    for vc in (crest_left, crest_right):
+        sta, z = vc.high_low_point()
+        assert vc.bvc_station < sta < vc.evc_station and abs(vc.grade_at(sta)) < 1e-6
+        assert z >= max(vc.elevation_at(sta - 5), vc.elevation_at(sta + 5))
+    assert crest_left.high_low_point()[0] < 1000.0 < crest_right.high_low_point()[0]
+    assert _UVC(2.0, 4.0, 100.0, 200.0).high_low_point() is None
+    with _pt.raises(ValueError):
+        _UVC(2.0, -2.0, 0.0, 100.0)

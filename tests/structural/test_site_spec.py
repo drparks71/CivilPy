@@ -107,3 +107,19 @@ def test_bridge_site_stations_must_lie_on_the_alignment():
 def test_new_provenance_sources():
     for src in ("obm", "gis", "design_file"):
         assert src in SOURCES and Provenance(src).validate() == []
+
+
+def test_pvi_record_keeps_unsymmetrical_halves():
+    from civilpy.structural.site_spec import AlignmentRecord, PVIRecord
+    from civilpy.transportation.alignment import Alignment, Tangent, VerticalProfile
+
+    prof = VerticalProfile([(0.0, 10.0, 0.0), (500.0, 20.0, 100.0, 300.0), (1000.0, 15.0, 200.0), (1500.0, 15.0, 0.0)])
+    al = Alignment((0.0, 0.0), 0.0, [Tangent(1500.0)], profile=prof)
+    rec = AlignmentRecord.from_alignment(al, "U")
+    p1, p2 = rec.profile.pvis[1], rec.profile.pvis[2]
+    assert (p1.curve_length_ft, p1.curve_length_in_ft, p1.curve_length_out_ft) == (400.0, 100.0, 300.0)
+    assert (p2.curve_length_ft, p2.curve_length_in_ft, p2.curve_length_out_ft) == (200.0, 0.0, 0.0)
+    assert PVIRecord(1.0, 2.0, 50.0).as_pvi() == (1.0, 2.0, 50.0)
+    again = rec.to_alignment()
+    for s in range(0, 1501, 25):
+        assert abs(again.profile.elevation_at(s) - prof.elevation_at(s)) < 1e-9

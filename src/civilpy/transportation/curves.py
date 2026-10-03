@@ -285,3 +285,89 @@ class HorizontalCurve:
                      f"D = {self.degree_of_curve_deg:.2f}°")
         ax.grid(True, alpha=0.3)
         return ax.get_figure()
+
+
+class UnsymmetricalVerticalCurve(VerticalCurve):
+    """Unsymmetrical (unequal-tangent) parabolic vertical curve: ``left_length_ft``
+    from the BVC to the PVI station and ``right_length_ft`` from there to the
+    EVC.  Two parabolas meet at the PVI station (the CVC) with a common
+    tangent; with equal halves it is the :class:`VerticalCurve` parabola.
+
+    With ``A = g2 - g1`` (decimal) the offset from the PVI down to the curve
+    is ``A L1 L2 / (2 (L1 + L2))`` and the two parabolas have rates
+    ``A L2 / (2 L1 (L1 + L2))`` and ``A L1 / (2 L2 (L1 + L2))``; ``length`` is
+    ``L1 + L2`` and ``k_value`` uses it."""
+
+    def __init__(self, g1_pct: float, g2_pct: float, left_length_ft: float, right_length_ft: float,
+                 pvi_station_ft: float = 0.0, pvi_elevation_ft: float = 0.0):
+        if left_length_ft <= 0.0 or right_length_ft <= 0.0:
+            raise ValueError("both halves of an unsymmetrical vertical curve must be positive")
+        super().__init__(g1_pct, g2_pct, float(left_length_ft) + float(right_length_ft),
+                         pvi_station_ft, pvi_elevation_ft)
+        self.left_length = float(left_length_ft)
+        self.right_length = float(right_length_ft)
+
+    @property
+    def _a(self) -> float:
+        return self.a_pct / 100.0
+
+    @property
+    def bvc_station(self) -> float:
+        return self.pvi_station - self.left_length
+
+    @property
+    def evc_station(self) -> float:
+        return self.pvi_station + self.right_length
+
+    @property
+    def bvc_elevation(self) -> float:
+        return self.pvi_elevation - self.g1 / 100.0 * self.left_length
+
+    @property
+    def evc_elevation(self) -> float:
+        return self.pvi_elevation + self.g2 / 100.0 * self.right_length
+
+    @property
+    def cvc_elevation(self) -> float:
+        """Elevation on the curve at the PVI station (where the two parabolas meet)."""
+        return self.pvi_elevation + self._a * self.left_length * self.right_length / (2.0 * self.length)
+
+    @property
+    def _rate_left(self) -> float:
+        return self._a * self.right_length / (2.0 * self.left_length * self.length)
+
+    @property
+    def _rate_right(self) -> float:
+        return self._a * self.left_length / (2.0 * self.right_length * self.length)
+
+    def elevation_at(self, station_ft: float) -> float:
+        if station_ft <= self.bvc_station:
+            return self.pvi_elevation + self.g1 / 100.0 * (station_ft - self.pvi_station)
+        if station_ft >= self.evc_station:
+            return self.pvi_elevation + self.g2 / 100.0 * (station_ft - self.pvi_station)
+        if station_ft <= self.pvi_station:
+            x = station_ft - self.bvc_station
+            return self.bvc_elevation + self.g1 / 100.0 * x + self._rate_left * x ** 2
+        u = self.evc_station - station_ft
+        return self.evc_elevation - self.g2 / 100.0 * u + self._rate_right * u ** 2
+
+    def grade_at(self, station_ft: float) -> float:
+        if station_ft <= self.bvc_station:
+            return self.g1
+        if station_ft >= self.evc_station:
+            return self.g2
+        if station_ft <= self.pvi_station:
+            return self.g1 + 200.0 * self._rate_left * (station_ft - self.bvc_station)
+        return self.g2 - 200.0 * self._rate_right * (self.evc_station - station_ft)
+
+    def high_low_point(self) -> tuple[float, float] | None:
+        if self.g1 * self.g2 > 0.0:
+            return None
+        g_cvc = self.g1 + 200.0 * self._rate_left * self.left_length          # grade at the CVC (percent)
+        if self.g1 * g_cvc <= 0.0:                                             # turns on the left parabola
+            x = -self.g1 / (200.0 * self._rate_left)
+            sta = self.bvc_station + x
+        else:                                                                  # turns on the right parabola
+            u = self.g2 / (200.0 * self._rate_right)
+            sta = self.evc_station - u
+        return sta, self.elevation_at(sta)

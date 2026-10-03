@@ -233,21 +233,38 @@ def _spiral_offset(el: "Spiral", az0_deg: float, s: float) -> tuple[float, float
 class VerticalProfile:
     """Elevation as a function of station from a list of PVIs.
 
-    ``pvis`` is an ordered list of ``(station_ft, elevation_ft, curve_len_ft)``.
-    The first and last entries are the profile ends and should use
-    ``curve_len_ft = 0``.  Between consecutive PVIs the grade is straight;
-    interior PVIs with a non-zero curve length carry an equal-tangent parabola
-    (built on :class:`~civilpy.transportation.curves.VerticalCurve`)."""
+    ``pvis`` is an ordered list of ``(station_ft, elevation_ft, curve_len_ft)``
+    or, for an unsymmetrical curve, ``(station_ft, elevation_ft, len_in_ft,
+    len_out_ft)``.  The first and last entries are the profile ends and should
+    use ``curve_len_ft = 0``.  Between consecutive PVIs the grade is straight;
+    interior PVIs with a non-zero curve length carry a parabola (an
+    equal-tangent :class:`~civilpy.transportation.curves.VerticalCurve`, or an
+    :class:`~civilpy.transportation.curves.UnsymmetricalVerticalCurve` when the
+    two halves differ).  After construction ``pvis`` always holds 3-tuples with
+    the total curve length; ``pvi_lengths`` holds each PVI's ``(len_in,
+    len_out)`` so writers can tell the two kinds apart."""
 
-    pvis: list[tuple[float, float, float]]
+    pvis: list[tuple[float, ...]]
 
     def __post_init__(self):
-        from civilpy.transportation.curves import VerticalCurve
+        from civilpy.transportation.curves import UnsymmetricalVerticalCurve, VerticalCurve
 
-        pv = [(float(s), float(e), float(L)) for s, e, L in self.pvis]
+        pv, halves = [], []
+        for p in self.pvis:
+            if len(p) == 4:
+                s, e, l_in, l_out = (float(v) for v in p)
+                if (l_in > 0.0) != (l_out > 0.0):
+                    raise ValueError("an unsymmetrical curve needs both halves positive")
+                pv.append((s, e, l_in + l_out))
+                halves.append((l_in, l_out))
+            else:
+                s, e, L = (float(v) for v in p)
+                pv.append((s, e, L))
+                halves.append((L / 2.0, L / 2.0))
         if len(pv) < 2:
             raise ValueError("a profile needs at least two PVIs (the ends)")
         self.pvis = pv
+        self.pvi_lengths = halves
         self._grades = []                       # grade (%) of each PVI->PVI leg
         for (s0, e0, _), (s1, e1, _) in zip(pv, pv[1:]):
             if s1 <= s0:
@@ -258,8 +275,13 @@ class VerticalProfile:
             L = pv[i][2]
             if L <= 0.0:
                 continue
-            vc = VerticalCurve(self._grades[i - 1], self._grades[i], L,
-                               pvi_station_ft=pv[i][0], pvi_elevation_ft=pv[i][1])
+            l_in, l_out = halves[i]
+            if abs(l_in - l_out) > 1e-9:
+                vc = UnsymmetricalVerticalCurve(self._grades[i - 1], self._grades[i], l_in, l_out,
+                                                pvi_station_ft=pv[i][0], pvi_elevation_ft=pv[i][1])
+            else:
+                vc = VerticalCurve(self._grades[i - 1], self._grades[i], L,
+                                   pvi_station_ft=pv[i][0], pvi_elevation_ft=pv[i][1])
             self._curves.append((vc.bvc_station, vc.evc_station, vc))
 
     def elevation_at(self, station_ft: float) -> float:

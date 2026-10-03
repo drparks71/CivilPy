@@ -127,3 +127,22 @@ def test_curve_validation():
 def test_profile_requires_increasing_stations():
     with pytest.raises(ValueError):
         VerticalProfile([(100.0, 10.0, 0.0), (100.0, 12.0, 0.0)])
+
+
+def test_vertical_profile_takes_unsymmetrical_pvis():
+    """(station, elevation, len_in, len_out) builds an unsymmetrical curve; the
+    stored pvis stay 3-tuples (total length) with the halves in pvi_lengths."""
+    import pytest
+    from civilpy.transportation.alignment import VerticalProfile
+    from civilpy.transportation.curves import UnsymmetricalVerticalCurve
+
+    prof = VerticalProfile([(0.0, 100.0, 0.0), (1000.0, 120.0, 300.0, 500.0), (2000.0, 110.0, 400.0), (3000.0, 110.0, 0.0)])
+    assert prof.pvis[1] == (1000.0, 120.0, 800.0) and prof.pvi_lengths[1] == (300.0, 500.0)
+    assert prof.pvi_lengths[2] == (200.0, 200.0)
+    vc = prof._curves[0][2]
+    assert isinstance(vc, UnsymmetricalVerticalCurve)
+    assert abs(prof.elevation_at(700.0) - (100.0 + 0.02 * 700.0)) < 1e-9          # BVC on the tangent
+    assert abs(prof.elevation_at(1500.0) - (120.0 - 0.01 * 500.0)) < 1e-9         # EVC on the tangent
+    assert abs(prof.elevation_at(1000.0) - vc.elevation_at(1000.0)) < 1e-12
+    with pytest.raises(ValueError):
+        VerticalProfile([(0.0, 0.0, 0.0), (500.0, 5.0, 100.0, 0.0), (1000.0, 0.0, 0.0)])

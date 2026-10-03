@@ -110,14 +110,34 @@ def test_unsupported_geometry_is_rejected(snippet, match):
         read_alignments(io.StringIO(xml))
 
 
-def test_unsymmetric_vertical_curve_is_rejected():
+def test_unsymmetric_vertical_curve_is_read():
     xml = METRIC.replace("</CoordGeom>", "</CoordGeom><Profile><ProfAlign>"
                          "<PVI>100 10</PVI><UnsymParaCurve lengthIn='10' lengthOut='20'>150 12</UnsymParaCurve>"
                          "<PVI>300 11</PVI></ProfAlign></Profile>")
-    with pytest.raises(ValueError, match="unsymmetrical"):
-        read_alignments(io.StringIO(xml))
+    al = next(iter(read_alignments(io.StringIO(xml)).values()))
+    f = 3937.0 / 1200.0                                 # METRIC is in meters; profiles come out in US survey ft
+    assert al.profile.pvi_lengths[1] == pytest.approx((10 * f, 20 * f))
+    assert al.profile.pvis[1][2] == pytest.approx(30 * f)
 
 
 def test_write_rejects_unknown_units():
     with pytest.raises(ValueError):
         write_alignments({}, io.StringIO(), units="furlong")
+
+
+def test_unsymmetrical_parabola_round_trips_through_landxml(tmp_path):
+    import io
+
+    from civilpy.transportation.alignment import Alignment, Tangent, VerticalProfile
+    from civilpy.transportation.landxml import read_alignments, write_alignments
+
+    prof = VerticalProfile([(0.0, 600.0, 0.0), (800.0, 624.0, 200.0, 350.0), (1600.0, 610.0, 300.0), (2400.0, 612.0, 0.0)])
+    al = Alignment((1000.0, 2000.0), 45.0, [Tangent(2400.0)], profile=prof)
+    buf = io.StringIO()
+    write_alignments({"U": al}, buf)
+    xml = buf.getvalue()
+    assert "UnsymParaCurve" in xml and 'lengthIn="200' in xml and 'lengthOut="350' in xml
+    back = read_alignments(io.StringIO(xml))["U"]
+    assert back.profile.pvi_lengths[1] == (200.0, 350.0) and back.profile.pvis[1][2] == 550.0
+    for s in range(0, 2401, 50):
+        assert abs(back.profile.elevation_at(s) - prof.elevation_at(s)) < 1e-6
