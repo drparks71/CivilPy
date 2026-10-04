@@ -35,7 +35,8 @@ skipped-by-rating. Companion decisions and open questions live in
 | EXJ-5-93 | done | `structural/odot/strip_seal_joint_box_beam.py` | `Notebooks/res/EXJ-5-93.py` | 8 (`test_odot_strip_seal_joint_box_beam.py`) |
 | PSBD-1-25 | done (earlier work) | `structural/odot/box_beam.py` + `box_beam_design.py` | `rhino_box_beam.build_box_beams` (full pipeline, not a single GH script) | shared with box-beam tests |
 | PSID-1-13 | done | `structural/odot/ps_i_beam.py` | `Notebooks/res/PSID-1-13.py` | 7 (`test_odot_ps_i_beam.py`) |
-| ICD-1-20, ICD-2-18, SICD-1-21, SICD-2-14 | not built (by design) | — | — | end-condition add-ons / guide sheets, not standalone structures |
+| ICD-1-20, ICD-2-18 | done (2026-10-03) | `structural/odot/integral_abutment.py` (limits: skew <= 30, expansion length by skew/beam type, pile spacing 3 dia..8 ft, >= 4 piles, cap height <= 7'-6"; pile min-length table; rebar list) + `rhino_scd_substructure.integral_abutment_emit` | emit (no GH script) | 16 (`test_odot_integral_abutments.py`, shared) |
+| SICD-1-21, SICD-2-14 | done (2026-10-03) | `structural/odot/semi_integral_abutment.py` (rigid stem + footing on 2 pile rows or drilled shafts, diaphragm 9 in above the seat, guides as ITEM 511 EACH) + `rhino_scd_substructure.semi_integral_abutment_emit` | emit | shared |
 | VPF-1-24 | done | `structural/odot/vandal_fence.py` | `Notebooks/res/VPF-1-24.py` | 9 (`test_odot_vandal_fence.py`) |
 | TVPF-1-18, GSD-1-19, NBS-1-09, WU-1-26 | not built (by design) | — | — | temporary-variant/reference-catalog/notes-only sheets, rated 6-8 |
 | RM-4.3, RM-4.5, RM-4.8 | done | `structural/odot/roadway_barrier.py` (Types B, B1, C, C1, D, N) | `Notebooks/res/RM-4.x_RoadwayBarrier.py` | 14 (`test_odot_roadway_barrier.py`, shared) |
@@ -77,6 +78,8 @@ or the sheet tables (headwall cy / lb).
 | HW-1.1 | `rhino_scd_headwalls.full_height_headwall_emit` | centre face + 2 wingwall prisms at t_s, opening circle, rebar schedule marker | 511 cy, 509E00200 lb (table) | same |
 
 Stated assumptions carried in the tags: wingwall thickness 1.5 ft (CPA, A-1-20),
-pile length 40 ft default, FB top plate 1 in.  Still GH-only: none - every sheet
-in the build log with geometry now emits.  Not built: EXJ-2-81 / EXJ-3-82 /
-EXJ-6-17, ICD-1-20 / ICD-2-18 / SICD-1-21 / SICD-2-14, and the notes-only sheets.
+pile length 40 ft default, FB top plate 1 in.  | ICD-1-20 / ICD-2-18 | `rhino_scd_substructure.integral_abutment_emit` | pile cap, single pile row (sheet minimum length by soil), end diaphragm (QC2), approach seat outline, 2 turned-back wingwalls | 511E40000, 511E12100, 507E10000 | `test_odot_integral_abutments.py` |
+| SICD-1-21 / SICD-2-14 | `rhino_scd_substructure.semi_integral_abutment_emit` | stem, footing, piles (2 rows) or drilled shafts, diaphragm at 9 in, wingwalls, guide points | 511, 507 | same |
+
+Still GH-only: none - every sheet in the build log with geometry now emits.
+Not built: EXJ-2-81 / EXJ-3-82 / EXJ-6-17 and the notes-only sheets.
