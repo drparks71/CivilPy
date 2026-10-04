@@ -51,3 +51,32 @@ skipped-by-rating. Companion decisions and open questions live in
 | MGS-3.1, MGS-3.2, MGS-3.3 | done | `structural/odot/guardrail.py` (`BRIDGE_TERMINALS`, `layout_bridge_terminal`) | — | 6 (`test_odot_mgs_terminals.py`, shared) |
 | MGS-2.1 (extension) | done | `structural/odot/guardrail.py` (`layout_mgs_run`; parameters pre-existing) | — | 2 (shared) |
 | MGS-2.2/2.3/2.4, MGS-4.1/4.2, MGS-6.1 | done (registry notes, proportional) | `structural/odot/guardrail.py` (`MGS_DRAWINGS` notes) | — | 1 (shared) |
+
+## BrIM emit tier (2026-10-03)
+
+The Grasshopper prototypes were deleted (commit `0800b5d`); the sheets below now
+emit tagged `EmitObject` records (prisms / cylinders / meshes / polylines with
+`bim.*` + `pay.*` user text) through the same `objects_to_3dm` / `objects_to_ifc`
+backends as the approach slab and box beams, placed on a support line
+(`rhino_scd_substructure.SupportFrame`: alignment + station, skew, offset,
+elevation, near / far).  Quantities come from the geometry (concrete cy, pile ft)
+or the sheet tables (headwall cy / lb).
+
+| SCD | Emit module | Objects | Pay | Tests |
+|---|---|---|---|---|
+| CPA-1-08 | `rhino_scd_substructure.capped_pile_abutment_emit` | cap prism, HP12x53 pile cylinders, 1 or 2 wingwall prisms | 511E40000 cy, 507E10000 ft | `test_rhino_scd_substructure.py` |
+| CPP-1-08 | `rhino_scd_substructure.capped_pile_pier_emit` | stadium cap prism (centred on the alignment), piles | 511, 507 | same |
+| A-1-20 | `rhino_scd_substructure.typical_abutment_emit` | backwall, footing (from -depth up to the seat; the prototype's double-depth footing fixed), wingwalls | 511 | same |
+| RB-1-55 | `rhino_scd_bearings.rocker_bolster_emit(kind=rocker\|bolster)` | base plate prism, tapered body mesh, rocker top prism | 516E10000 ea | `test_rhino_scd_bearings.py` |
+| FB-1-82 | `rhino_scd_bearings.fixed_bearing_emit` | masonry plate, pin cylinder across the beam, top plate | 516 ea | same |
+| BD-1-11 | `rhino_scd_bearings.load_plate_emit` | beveled plate mesh | 513E10220 lb (490 pcf) | same |
+| EXJ-4-87 | `rhino_scd_details.strip_seal_joint_emit` | gland polyline, support-angle runs (display) | 516E13000 ft [CONFIRM code] | `test_rhino_scd_details.py` |
+| EXJ-5-93 | `rhino_scd_details.box_beam_joint_emit` | gland polyline, beam-gap ticks | 516E13000 ft | same |
+| VPF-1-24 | `rhino_scd_details.vandal_fence_emit` | post and rail cylinders | 607E23000 ft [CONFIRM code] | same |
+| HW-2.1 / HW-2.2 | `rhino_scd_headwalls.headwall_emit` | side profile swept across the width, pipe cylinder (display) | 511 cy (table) | same |
+| HW-1.1 | `rhino_scd_headwalls.full_height_headwall_emit` | centre face + 2 wingwall prisms at t_s, opening circle, rebar schedule marker | 511 cy, 509E00200 lb (table) | same |
+
+Stated assumptions carried in the tags: wingwall thickness 1.5 ft (CPA, A-1-20),
+pile length 40 ft default, FB top plate 1 in.  Still GH-only: none - every sheet
+in the build log with geometry now emits.  Not built: EXJ-2-81 / EXJ-3-82 /
+EXJ-6-17, ICD-1-20 / ICD-2-18 / SICD-1-21 / SICD-2-14, and the notes-only sheets.

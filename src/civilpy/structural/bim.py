@@ -79,6 +79,12 @@ PAY_ITEMS: dict[str, PayItem] = {
     "526E10000": PayItem("526E10000",
                          "Reinforced concrete approach slabs [CONFIRM]",
                          "sy", "526", 1),
+    "516E13000": PayItem("516E13000",
+                         "Strip seal expansion joint, including gland and extrusions [CONFIRM]",
+                         "ft", "516", 1),
+    "607E23000": PayItem("607E23000",
+                         "Vandal protection fence [CONFIRM]",
+                         "ft", "607", 1),
 }
 
 
@@ -106,6 +112,8 @@ DEFAULT_UNIT_PRICES: dict[str, float] = {
     "515E20000": 30000.0,    # PS I-beam member, $/ea
     "515E30000": 1500.0,     # PS intermediate diaphragm, $/ea
     "526E10000": 120.0,      # RC approach slab, $/sy
+    "516E13000": 400.0,      # strip seal expansion joint, $/ft [CONFIRM]
+    "607E23000": 60.0,       # vandal protection fence, $/ft [CONFIRM]
 }
 
 
@@ -313,7 +321,7 @@ def haunch_tags(bid: str, *, depth_in: float, width_in: float,
 #: Substructure concrete component types (one Rhino layer each).
 SUBSTRUCTURE_CONCRETE_TYPES = (
     "pier_cap", "abutment_cap", "beam_seat", "column", "footing",
-    "backwall", "wingwall", "foreslope_wall", "cutoff_wall")
+    "backwall", "wingwall", "foreslope_wall", "cutoff_wall", "headwall", "wall")
 
 
 def substructure_concrete_tags(btype: str, bid: str, *,
