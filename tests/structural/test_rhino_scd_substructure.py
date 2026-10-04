@@ -137,13 +137,13 @@ def test_cpa_placement_on_alignment_far_side():
     cy = sum(p[1] for p in cap.points) / 4.0
     assert (cx, cy) == pytest.approx(fr["point"][:2], abs=1e-6)
     assert all(p[2] == pytest.approx(650.0) for p in cap.points)
-    # the wingwall flares toward higher stations on the near side and lower on the far side
+    # the wingwall flares behind the abutment: toward lower stations on the near side, higher on the far side
     def flare_along(emit, sta):
         w = _by_type(emit, "wingwall")[0]
         t = al.frame_at(sta)["tangent"]
         root, tip = w.points[0], w.points[2]
         return (tip[0] - root[0]) * t[0] + (tip[1] - root[1]) * t[1]
-    assert flare_along(near, 300.0) > 0 and flare_along(far, 900.0) < 0
+    assert flare_along(near, 300.0) < 0 and flare_along(far, 900.0) > 0
     assert near.doc_tags["scd.station_ft"] == "300" and far.doc_tags["scd.side"] == "far"
 
 

@@ -66,9 +66,9 @@ def test_integral_layout_geometry():
     # the cap plan is a 47 x 3 ft parallelogram sheared by the skew
     assert polygon_area(L.cap_outline) == pytest.approx(47.0 * 3.0)
     assert L.max_expansion_length_ft == pytest.approx(267 - (267 - 133) * 20 / 30)
-    # wingwalls behind the diaphragm ends, turned back 2.5 ft, up to the diaphragm height
+    # wingwalls beside the diaphragm ends: from its back face 2.5 ft toward the bridge, up to the diaphragm height
     wl, wr = L.wingwall_left, L.wingwall_right
-    assert wl[0][1] - wl[3][1] == pytest.approx(2.5) and wl[1][2] == pytest.approx(6.0)
+    assert wl[0][1] == pytest.approx(-1.5) and wl[3][1] - wl[0][1] == pytest.approx(2.5) and wl[1][2] == pytest.approx(6.0)
     assert wr[0][0] - wl[0][0] == pytest.approx(47.0 + 2 * 2.0 / 12.0, abs=1e-9)
     assert L.seat_notch[0][2] == pytest.approx(6.0)
     assert "ICD-1-20" in L.notes[0]
@@ -154,9 +154,9 @@ def test_integral_emit_on_alignment_with_profile():
     assert all(p[2] == pytest.approx(654.0) for p in cap.points)   # seat at the profile elevation
     cx = sum(p[0] for p in cap.points) / 4.0
     assert cx == pytest.approx(500.0, abs=1e-6)
-    # far side: the wingwalls turn back toward higher stations (+x here)
+    # far side: the wingwall root (back face) is at the higher station, its 2.5 ft run toward the bridge (-x here)
     wl = _by(emit, "wingwall")[0]
-    assert wl.points[2][0] > wl.points[0][0]
+    assert wl.points[0][0] > wl.points[2][0]
 
 
 def test_semi_integral_emit_piles_and_shafts():

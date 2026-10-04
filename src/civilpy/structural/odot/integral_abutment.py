@@ -258,8 +258,10 @@ def layout_integral_abutment(inp: IntegralAbutmentInput) -> IntegralAbutmentLayo
     # wingwalls turn back along the roadway (toward lower stations) from behind the diaphragm ends
     def wing(sign: float):
         x = sign * (half_l + joint)
-        return (pt(x, half_w, 0.0), pt(x, half_w, h_w),
-                pt(x, half_w - WINGWALL_LENGTH_FT, h_w), pt(x, half_w - WINGWALL_LENGTH_FT, 0.0))
+        # PART PLAN: the 2'-6" wingwall starts at the back face of the diaphragm (approach side) and runs
+        # toward the bridge alongside the diaphragm end, the 2" PEJF between them
+        return (pt(x, -half_w, 0.0), pt(x, -half_w, h_w), pt(x, -half_w + WINGWALL_LENGTH_FT, h_w),
+                pt(x, -half_w + WINGWALL_LENGTH_FT, 0.0))
     scd = SCD_PS if inp.beam_type == "ps_i" else SCD
     notes = (
         f"{scd} integral abutment: cap {L:.2f} x {CAP_WIDTH_FT:g} ft x {inp.cap_height_ft:g} ft deep on "

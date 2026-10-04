@@ -215,7 +215,13 @@ def capped_pile_abutment_emit(inp: cpa.AbutmentInput, *, alignment=None, station
                          elevation_ft=elevation_ft, side=side)
     fc = cpa_fc_psi()
     objects: list[EmitObject] = []
-    cap_pts = tuple(frame.point(*p) for p in layout.cap_outline)
+    tan_skew = math.tan(math.radians(inp.skew_deg))
+
+    def back(p):             # layout +y is the approach side: mirror in y, keeping the layout's own skew shear
+        xs, y, z = p
+        return (xs - 2.0 * y * tan_skew, -y, z)
+
+    cap_pts = tuple(frame.point(*back(p)) for p in layout.cap_outline)
     cap_vec = (0.0, 0.0, -inp.footing_depth_ft)
     cap_len = (inp.n_piles - 1) * inp.pile_spacing_ft + 2.0 * cpa.CAP_HALF_ZONE_FT
     objects.append(EmitObject(kind="prism", layer=LAYER_SUB_CAPS, points=cap_pts, vector=cap_vec,
@@ -223,10 +229,10 @@ def capped_pile_abutment_emit(inp: cpa.AbutmentInput, *, alignment=None, station
                                          length_ft=round(cap_len, 3), width_ft=inp.cap_width_ft,
                                          depth_ft=inp.footing_depth_ft, skew_deg=inp.skew_deg)))
     for i, p in enumerate(layout.pile_points, start=1):
-        objects.append(_pile(frame, p, pile_length_ft, f"{bid}-PILE-{i}", cpa.SCD))
-    wings = [("WW1", layout.wingwall_outline)]
+        objects.append(_pile(frame, back(p), pile_length_ft, f"{bid}-PILE-{i}", cpa.SCD))
+    wings = [("WW1", tuple(back(p) for p in layout.wingwall_outline))]
     if both_wingwalls:
-        wings.append(("WW2", tuple((-x, y, z) for x, y, z in layout.wingwall_outline)))
+        wings.append(("WW2", tuple((-x, y, z) for x, y, z in wings[0][1])))
     for label, quad in wings:
         pts, vec = _wall_prism(frame, quad, wingwall_thickness_ft)
         tags = _conc("wingwall", f"{bid}-{label}", cpa.SCD, prism_volume_cy(pts, vec), fc,
@@ -291,9 +297,9 @@ def typical_abutment_emit(inp: a120.AbutmentInput, *, alignment=None, station_ft
                          elevation_ft=elevation_ft, side=side)
     half_w = inp.width_ft / 2.0
 
-    def place(p):            # layout x is across the backwall, y along it: swap into (a, b)
+    def place(p):            # layout x is across the backwall (+x = approach side), y along it: swap into (a, -b)
         x, y, z = p
-        return frame.point(y - half_w, x, z)
+        return frame.point(y - half_w, -x, z)
 
     fc = a120.CONCRETE_STRENGTH_KSI * 1000.0
     objects: list[EmitObject] = []
@@ -310,8 +316,8 @@ def typical_abutment_emit(inp: a120.AbutmentInput, *, alignment=None, station_ft
                                          depth_ft=inp.footing_depth_ft, width_ft=inp.width_ft)))
     wings = [("WW1", layout.wingwall_outline)]
     if both_wingwalls:
-        # mirror about the backwall's mid-width (local y = W/2) and flip x
-        wings.append(("WW2", tuple((-x, inp.width_ft - y, z) for x, y, z in layout.wingwall_outline)))
+        # mirror about the backwall's mid-width (local y = W/2); both wings flare toward the approach
+        wings.append(("WW2", tuple((x, inp.width_ft - y, z) for x, y, z in layout.wingwall_outline)))
     for label, quad in wings:
         pts, vec = _wall_prism_placed(tuple(place(p) for p in quad), wingwall_thickness_ft)
         tags = _conc("wingwall", f"{bid}-{label}", a120.SCD, prism_volume_cy(pts, vec), fc,
