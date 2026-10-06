@@ -160,7 +160,7 @@ def test_annotations_can_be_dropped(tmp_path):
     objects_to_ifc(rt.truss_emit(m, lod=300), with_ann, annotations=True)
     objects_to_ifc(rt.truss_emit(m, lod=300), without, annotations=False)
     assert len(ifcopenshell.open(str(with_ann)).by_type("IfcAnnotation")) == 6
-    assert ifcopenshell.open(str(without)).by_type("IfcAnnotation") == []
+    assert list(ifcopenshell.open(str(without)).by_type("IfcAnnotation")) == []
 
 
 def test_degenerate_geometry_is_skipped_not_written(tmp_path):
@@ -169,7 +169,7 @@ def test_degenerate_geometry_is_skipped_not_written(tmp_path):
     p = tmp_path / "d.ifc"
     counts = objects_to_ifc(objs, p)
     assert counts == {}
-    assert ifcopenshell.open(str(p)).by_type("IfcSlab") == []
+    assert list(ifcopenshell.open(str(p)).by_type("IfcSlab")) == []
 
 
 # --------------------------------------------------------------------------- #

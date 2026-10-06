@@ -104,6 +104,18 @@ cande = [
 rhino = [
     "rhino3dm>=8.0",
 ]
+ifc = [
+    # civilpy.structural.ifc_emit
+    "ifcopenshell>=0.8",
+]
+gui = [
+    # desktop helpers: state.ohio.DOT.D6_file_explorer, state.maryland.mdta_photo_editor
+    "FreeSimpleGUI>=5.0",
+]
+llm = [
+    # state.ohio.DOT.gemini
+    "google-generativeai>=0.8",
+]
 fem = [
     "pygmsh>=7.1",
     "scikit-fem>=8.0",
@@ -115,8 +127,11 @@ test = [
     "pytest-cov>=4.0",
 ]
 full = [
-    "civilpy[db,pdf,geo,web,jupyter,validation,rhino,fem]",
-    "FreeSimpleGUI>=5.0",
+    "civilpy[db,pdf,geo,web,jupyter,validation,rhino,fem,ifc,gui,mcp]",
+]
+# everything, including the heavy wheels (torch, open3d); what CI tests against
+all = [
+    "civilpy[full,lidar,ai,llm,cande]",
 ]
 
 [project.urls]

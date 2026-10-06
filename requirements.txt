@@ -2,6 +2,12 @@
 #    uv export --frozen --no-emit-project --no-hashes --extra full --extra test -o requirements.txt
 annotated-types==0.7.0
     # via pydantic
+anyio==4.14.2
+    # via
+    #   httpx
+    #   mcp
+    #   sse-starlette
+    #   starlette
 appnope==0.1.4 ; sys_platform == 'darwin'
     # via ipykernel
 asttokens==3.0.0
@@ -26,6 +32,8 @@ camelot-py==2.0.0
     # via civilpy
 certifi==2025.1.31
     # via
+    #   httpcore
+    #   httpx
     #   pyproj
     #   requests
     #   selenium
@@ -38,7 +46,9 @@ cffi==2.0.0 ; implementation_name == 'pypy' or os_name == 'nt' or platform_pytho
 charset-normalizer==3.4.1
     # via requests
 click==8.3.3
-    # via camelot-py
+    # via
+    #   camelot-py
+    #   uvicorn
 colorama==0.4.6 ; sys_platform == 'win32'
     # via
     #   click
@@ -58,6 +68,7 @@ cryptography==50.0.1
     # via
     #   oracledb
     #   paramiko
+    #   pyjwt
 cycler==0.12.1
     # via matplotlib
 debugpy==1.8.12
@@ -72,6 +83,7 @@ et-xmlfile==2.0.0
     # via openpyxl
 exceptiongroup==1.3.1 ; python_full_version < '3.11'
     # via
+    #   anyio
     #   ipython
     #   pytest
     #   trio
@@ -99,11 +111,24 @@ gmsh==4.15.2
 greenlet==3.5.0 ; platform_machine == 'AMD64' or platform_machine == 'WIN32' or platform_machine == 'aarch64' or platform_machine == 'amd64' or platform_machine == 'ppc64le' or platform_machine == 'win32' or platform_machine == 'x86_64'
     # via sqlalchemy
 h11==0.16.0
-    # via wsproto
+    # via
+    #   httpcore
+    #   uvicorn
+    #   wsproto
+httpcore==1.0.9
+    # via httpx
+httpx==0.28.1
+    # via mcp
+httpx-sse==0.4.3
+    # via mcp
 idna==3.19
     # via
+    #   anyio
+    #   httpx
     #   requests
     #   trio
+ifcopenshell==0.9.0
+    # via civilpy
 imageio==2.37.4
     # via scikit-image
 iniconfig==2.3.0
@@ -118,6 +143,8 @@ ipython==8.32.0
     #   ipywidgets
 ipywidgets==8.1.8
     # via civilpy
+isodate==0.7.2
+    # via ifcopenshell
 jedi==0.19.2
     # via ipython
 jinja2==3.1.6
@@ -126,7 +153,9 @@ jinja2==3.1.6
     #   folium
     #   nbconvert
 jsonschema==4.23.0
-    # via nbformat
+    # via
+    #   mcp
+    #   nbformat
 jsonschema-specifications==2024.10.1
     # via jsonschema
 jupyter-client==8.6.3
@@ -146,6 +175,8 @@ jupyterlab-widgets==3.0.16
     # via ipywidgets
 kiwisolver==1.5.0
     # via matplotlib
+lark==1.3.1
+    # via ifcopenshell
 lazy-loader==0.5
     # via scikit-image
 lxml==6.1.2
@@ -162,6 +193,8 @@ matplotlib-inline==0.1.7
     # via
     #   ipykernel
     #   ipython
+mcp==1.28.1
+    # via civilpy
 mdurl==0.1.2
     # via markdown-it-py
 meshio==5.3.5
@@ -202,6 +235,7 @@ numpy==2.2.6 ; python_full_version < '3.11'
     #   contourpy
     #   ezdxf
     #   folium
+    #   ifcopenshell
     #   imageio
     #   matplotlib
     #   meshio
@@ -211,6 +245,7 @@ numpy==2.2.6 ; python_full_version < '3.11'
     #   scikit-fem
     #   scikit-image
     #   scipy
+    #   shapely
     #   tifffile
 numpy==2.4.4 ; python_full_version >= '3.11'
     # via
@@ -219,6 +254,7 @@ numpy==2.4.4 ; python_full_version >= '3.11'
     #   contourpy
     #   ezdxf
     #   folium
+    #   ifcopenshell
     #   imageio
     #   matplotlib
     #   meshio
@@ -228,6 +264,7 @@ numpy==2.4.4 ; python_full_version >= '3.11'
     #   scikit-fem
     #   scikit-image
     #   scipy
+    #   shapely
     #   tifffile
 opencv-python-headless==4.13.0.92
     # via camelot-py
@@ -312,9 +349,15 @@ pure-eval==0.2.3
 pycparser==2.22 ; (implementation_name != 'PyPy' and os_name == 'nt') or (implementation_name == 'pypy' and os_name != 'nt' and platform_python_implementation == 'PyPy') or (implementation_name != 'PyPy' and platform_python_implementation != 'PyPy')
     # via cffi
 pydantic==2.11.10 ; python_full_version < '3.14'
-    # via civilpy
+    # via
+    #   civilpy
+    #   mcp
+    #   pydantic-settings
 pydantic==2.13.5 ; python_full_version >= '3.14'
-    # via civilpy
+    # via
+    #   civilpy
+    #   mcp
+    #   pydantic-settings
 pydantic-core==2.33.2 ; python_full_version < '3.14'
     # via
     #   civilpy
@@ -323,6 +366,8 @@ pydantic-core==2.46.5 ; python_full_version >= '3.14'
     # via
     #   civilpy
     #   pydantic
+pydantic-settings==2.15.0
+    # via mcp
 pygments==2.21.0
     # via
     #   ipython
@@ -331,6 +376,8 @@ pygments==2.21.0
     #   rich
 pygmsh==7.1.17
     # via civilpy
+pyjwt==2.15.1
+    # via mcp
 pymupdf==1.27.2.3
     # via civilpy
 pynacl==1.6.2
@@ -338,6 +385,7 @@ pynacl==1.6.2
 pyparsing==3.3.2
     # via
     #   ezdxf
+    #   ifcopenshell
     #   matplotlib
 pypdfium2==5.7.1
     # via camelot-py
@@ -357,13 +405,20 @@ pytest-cov==7.1.0
     # via civilpy
 python-dateutil==2.9.0.post0
     # via
+    #   ifcopenshell
     #   jupyter-client
     #   matplotlib
     #   pandas
 python-dotenv==1.2.2
-    # via civilpy
+    # via
+    #   civilpy
+    #   pydantic-settings
+python-multipart==0.0.32
+    # via mcp
 pytz==2026.2 ; python_full_version < '3.11'
     # via pandas
+pywin32==312 ; sys_platform == 'win32'
+    # via mcp
 pyzmq==26.2.1
     # via
     #   ipykernel
@@ -404,6 +459,8 @@ scipy==1.17.1 ; python_full_version >= '3.11'
     #   scikit-image
 selenium==4.32.0
     # via civilpy
+shapely==2.1.2
+    # via ifcopenshell
 six==1.17.0
     # via python-dateutil
 sniffio==1.3.1
@@ -414,10 +471,16 @@ soupsieve==2.9.2
     # via beautifulsoup4
 sqlalchemy==2.0.49
     # via civilpy
+sse-starlette==3.4.8
+    # via mcp
 sshtunnel==0.4.0
     # via civilpy
 stack-data==0.6.3
     # via ipython
+starlette==1.6.0
+    # via
+    #   mcp
+    #   sse-starlette
 sympy==1.14.0
     # via civilpy
 tabulate==0.10.0
@@ -462,12 +525,15 @@ trio-websocket==0.12.2
     # via selenium
 typing-extensions==4.12.2 ; python_full_version >= '3.11' and python_full_version < '3.14'
     # via
+    #   anyio
     #   beautifulsoup4
     #   civilpy
     #   ezdxf
     #   flexcache
     #   flexparser
+    #   ifcopenshell
     #   ipython
+    #   mcp
     #   pint
     #   psycopg
     #   pydantic
@@ -475,9 +541,11 @@ typing-extensions==4.12.2 ; python_full_version >= '3.11' and python_full_versio
     #   referencing
     #   selenium
     #   sqlalchemy
+    #   starlette
     #   typing-inspection
 typing-extensions==4.16.0 ; python_full_version < '3.11' or python_full_version >= '3.14'
     # via
+    #   anyio
     #   beautifulsoup4
     #   camelot-py
     #   civilpy
@@ -486,18 +554,26 @@ typing-extensions==4.16.0 ; python_full_version < '3.11' or python_full_version 
     #   ezdxf
     #   flexcache
     #   flexparser
+    #   ifcopenshell
     #   ipython
+    #   mcp
     #   mistune
     #   pint
     #   psycopg
     #   pydantic
     #   pydantic-core
+    #   pyjwt
     #   referencing
     #   selenium
     #   sqlalchemy
+    #   starlette
     #   typing-inspection
+    #   uvicorn
 typing-inspection==0.4.2
-    # via pydantic
+    # via
+    #   mcp
+    #   pydantic
+    #   pydantic-settings
 tzdata==2026.2 ; python_full_version < '3.11' or sys_platform == 'emscripten' or sys_platform == 'win32'
     # via
     #   pandas
@@ -506,6 +582,8 @@ urllib3==2.8.0
     # via
     #   requests
     #   selenium
+uvicorn==0.52.4 ; sys_platform != 'emscripten'
+    # via mcp
 wcwidth==0.2.13
     # via prompt-toolkit
 webencodings==0.5.1
