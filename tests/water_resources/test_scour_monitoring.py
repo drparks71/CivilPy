@@ -175,6 +175,18 @@ class TestBasinStats:
         assert st["mean"] == pytest.approx(float(cells.mean()))
         assert st["max"] == pytest.approx(float(cells.max()))
 
+    @pytest.mark.parametrize("seed", [1, 2, 3])
+    def test_precomputed_cells_match_basin_stats(self, seed):
+        g = self.grid()
+        rng = np.random.default_rng(seed)
+        cx, cy = -83.05 + rng.uniform(-0.02, 0.02), 40.05 + rng.uniform(-0.02, 0.02)
+        ring = [[cx + 0.03 * math.cos(a), cy + 0.02 * math.sin(a)] for a in np.linspace(0, 2 * math.pi, 9)]
+        poly = {"type": "MultiPolygon", "coordinates": [[ring]]}
+        cells = g.cells_in(poly)
+        other = pr.Grid(g.values * 2, g.lat0, g.lon0, g.dlat, g.dlon)
+        assert g.stats_at(cells)["mean"] == pytest.approx(g.basin_stats(poly)["mean"])
+        assert other.stats_at(cells)["mean"] == pytest.approx(2 * g.basin_stats(poly)["mean"])
+
     def test_hole_excluded(self):
         g = self.grid()
         outer = [[-83.095, 40.0], [-82.995, 40.0], [-82.995, 40.095], [-83.095, 40.095], [-83.095, 40.0]]

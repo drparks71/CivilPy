@@ -194,32 +194,61 @@ class Grid:
             return float(self.values[r, c])
         return float("nan")
 
-    def basin_stats(self, geojson_geometry: dict, *, fallback_point=None) -> dict:
-        """Mean and max of the cells whose centres fall in a GeoJSON Polygon /
-        MultiPolygon (lon/lat), ignoring NaN.  A basin smaller than a cell
-        (no centre inside) takes the cell under ``fallback_point`` (lat, lon)
-        or under the polygon's first vertex."""
+    def cells_in(self, geojson_geometry: dict, *, fallback_point=None) -> tuple:
+        """(rows, cols) of the cells whose centres fall in a GeoJSON Polygon /
+        MultiPolygon (lon/lat).  A basin smaller than a cell (no centre
+        inside) takes the one cell under ``fallback_point`` (lat, lon) or
+        under the polygon's first vertex.  Compute once per basin and reuse
+        it on every grid of the same geometry (:meth:`stats_at`)."""
         from matplotlib.path import Path as MplPath
 
         polys = _polygons(geojson_geometry)
         xs = [x for p in polys for ring in p for x, _ in ring]
         ys = [y for p in polys for ring in p for _, y in ring]
-        sub = self.crop(min(xs) - self.dlon, min(ys) - self.dlat, max(xs) + self.dlon, max(ys) + self.dlat)
-        rr, cc = np.mgrid[0:sub.shape[0], 0:sub.shape[1]]
-        pts = np.column_stack([sub.lon_of_col(cc.ravel()), sub.lat_of_row(rr.ravel())])
-        inside = np.zeros(len(pts), bool)
-        for p in polys:
-            m = MplPath(np.asarray(p[0])).contains_points(pts)
-            for hole in p[1:]:
-                m &= ~MplPath(np.asarray(hole)).contains_points(pts)
-            inside |= m
-        vals = sub.values.ravel()[inside]
+        r_n, c_w = self.index_of(max(ys) + self.dlat, min(xs) - self.dlon)
+        r_s, c_e = self.index_of(min(ys) - self.dlat, max(xs) + self.dlon)
+        r0, r1 = sorted((r_n, r_s))
+        r0, r1 = max(r0, 0), min(r1, self.shape[0] - 1)
+        c0, c1 = max(c_w, 0), min(c_e, self.shape[1] - 1)
+        rows = cols = np.zeros(0, int)
+        if r1 >= r0 and c1 >= c0:
+            rr, cc = np.mgrid[r0:r1 + 1, c0:c1 + 1]
+            rr, cc = rr.ravel(), cc.ravel()
+            pts = np.column_stack([self.lon_of_col(cc), self.lat_of_row(rr)])
+            inside = np.zeros(len(pts), bool)
+            for p in polys:
+                m = MplPath(np.asarray(p[0])).contains_points(pts)
+                for hole in p[1:]:
+                    m &= ~MplPath(np.asarray(hole)).contains_points(pts)
+                inside |= m
+            rows, cols = rr[inside], cc[inside]
+        if len(rows) == 0:
+            lat, lon = fallback_point or (ys[0], xs[0])
+            r, c = self.index_of(lat, lon)
+            if 0 <= r < self.shape[0] and 0 <= c < self.shape[1]:
+                return np.array([r]), np.array([c])
+        return rows, cols
+
+    def stats_at(self, cells: tuple) -> dict:
+        """Mean / max of the finite values at precomputed ``(rows, cols)``."""
+        rows, cols = cells
+        vals = self.values[rows, cols] if len(rows) else np.zeros(0)
         vals = vals[np.isfinite(vals)]
         if len(vals) == 0:
-            lat, lon = fallback_point or (ys[0], xs[0])
-            v = self.value_at(lat, lon)
-            return {"mean": v, "max": v, "cells": 0}
-        return {"mean": float(vals.mean()), "max": float(vals.max()), "cells": int(len(vals))}
+            return {"mean": float("nan"), "max": float("nan"), "cells": 0}
+        return {"mean": float(vals.mean()), "max": float(vals.max()), "cells": int(len(rows))}
+
+    def basin_stats(self, geojson_geometry: dict, *, fallback_point=None) -> dict:
+        """Mean and max over a basin (:meth:`cells_in` then :meth:`stats_at`);
+        ``cells`` is 0 when the basin fell back to a single point cell."""
+        rows, cols = self.cells_in(geojson_geometry, fallback_point=fallback_point)
+        st = self.stats_at((rows, cols))
+        polys = _polygons(geojson_geometry)
+        from matplotlib.path import Path as MplPath
+        centre = (float(self.lon_of_col(cols[0])), float(self.lat_of_row(rows[0]))) if len(rows) == 1 else None
+        if centre is not None and not any(MplPath(np.asarray(p[0])).contains_point(centre) for p in polys):
+            st["cells"] = 0
+        return st
 
 
 def _polygons(geom: dict):
