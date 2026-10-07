@@ -6,10 +6,14 @@
 
 """Water resources engineering package.
 
-Open-channel hydraulics (:mod:`~civilpy.water_resources.open_channel`),
+Open-channel hydraulics (:mod:`~civilpy.water_resources.open_channel`,
+irregular sections :mod:`~civilpy.water_resources.cross_section`),
 pressurized pipe flow (:mod:`~civilpy.water_resources.pipe_flow`), bridge
-scour (:mod:`~civilpy.water_resources.scour`), and ODOT culvert headwall
-standards (:mod:`~civilpy.water_resources.hydraulics`).
+scour (:mod:`~civilpy.water_resources.scour`), ODOT culvert headwall
+standards (:mod:`~civilpy.water_resources.hydraulics`), USGS StreamStats
+basins and peak flows (:mod:`~civilpy.water_resources.streamstats`), NOAA
+Atlas 14 / MRMS rainfall (:mod:`~civilpy.water_resources.precipitation`) and
+post-storm scour screening (:mod:`~civilpy.water_resources.scour_screening`).
 """
 
 test_water_resources = True
