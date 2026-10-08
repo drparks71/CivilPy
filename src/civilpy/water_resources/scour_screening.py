@@ -79,6 +79,11 @@ class ScreeningInput:
     critical_velocity_fps: float | None = None
     wse_ft: float | None = None
     road_low_ft: float | None = None
+    # optional culvert analysis (HDS-5 crossing with the road as a weir); for a culvert it replaces the
+    # open-channel water surface in the overtopping test
+    culvert_headwater_ft: float | None = None
+    culvert_overtopping_cfs: float | None = None
+    culvert_outlet_velocity_fps: float | None = None
 
 
 @dataclass
@@ -128,16 +133,35 @@ def screen(inp: ScreeningInput) -> ScreeningResult:
     if over:
         score *= 1.25
         reasons.append(f"B.AP.02 {b2}: overtops about every {band:.0f}+ yr - event reached it")
-    if inp.wse_ft is not None and inp.road_low_ft is not None and inp.wse_ft >= inp.road_low_ft:
+    if inp.culvert_headwater_ft is not None:
+        q_over = inp.culvert_overtopping_cfs or 0.0
+        if q_over > 0 or (inp.road_low_ft is not None and inp.culvert_headwater_ft >= inp.road_low_ft):
+            over = True
+            score *= 1.25
+            reasons.append(f"culvert: headwater {inp.culvert_headwater_ft:.1f} ft"
+                           + (f" over road low point {inp.road_low_ft:.1f} ft" if inp.road_low_ft is not None else "")
+                           + f", {q_over:.0f} cfs over the road")
+        else:
+            reasons.append(f"culvert: headwater {inp.culvert_headwater_ft:.1f} ft"
+                           + (f", {inp.road_low_ft - inp.culvert_headwater_ft:.1f} ft below the road low point"
+                              if inp.road_low_ft is not None else "") + " - culvert carries the event")
+    elif inp.wse_ft is not None and inp.road_low_ft is not None and inp.wse_ft >= inp.road_low_ft:
         over = True
         score *= 1.25
         reasons.append(f"terrain: water surface {inp.wse_ft:.1f} ft at or over road low point {inp.road_low_ft:.1f} ft")
 
+    ratios = []
     if inp.channel_velocity_fps and inp.critical_velocity_fps:
-        ratio = inp.channel_velocity_fps / inp.critical_velocity_fps
+        ratios.append((inp.channel_velocity_fps / inp.critical_velocity_fps, "channel velocity",
+                       inp.channel_velocity_fps))
+    if inp.culvert_outlet_velocity_fps and inp.critical_velocity_fps:
+        ratios.append((inp.culvert_outlet_velocity_fps / inp.critical_velocity_fps, "culvert outlet velocity",
+                       inp.culvert_outlet_velocity_fps))
+    if ratios:
+        ratio, what, v_fps = max(ratios)
         if ratio > 1.0:
             score *= 1.0 + 0.25 * min(ratio - 1.0, 1.0)
-            reasons.append(f"channel velocity {inp.channel_velocity_fps:.1f} ft/s = {ratio:.1f}x critical")
+            reasons.append(f"{what} {v_fps:.1f} ft/s = {ratio:.1f}x critical")
 
     b4 = clean_code(inp.bap04)
     if b4 == "Y":

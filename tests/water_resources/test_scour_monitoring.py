@@ -397,6 +397,23 @@ class TestScreening:
                                            critical_velocity_fps=3))
         assert wet.overtopping_likely and wet.score > s0 and fast.score > s0
 
+    @pytest.mark.parametrize("hw,q_over,expect", [(99.0, 0.0, False), (100.4, 120.0, True), (100.0, 0.0, True)])
+    def test_culvert_headwater_decides_overtopping(self, hw, q_over, expect):
+        """A culvert's headwater replaces the open-channel water surface, either way."""
+        r = sc.screen(sc.ScreeningInput(20, bap02="1", bap03="B", wse_ft=95.0 if expect else 105.0, road_low_ft=100,
+                                        culvert_headwater_ft=hw, culvert_overtopping_cfs=q_over))
+        assert r.overtopping_likely is expect
+        assert any(x.startswith("culvert: headwater") for x in r.reasons)
+        assert not any(x.startswith("terrain: water surface") for x in r.reasons)
+
+    @pytest.mark.parametrize("v_out", [2.0, 6.0, 12.0])
+    def test_culvert_outlet_velocity_counts(self, v_out):
+        base = sc.screen(sc.ScreeningInput(20, bap03="B", channel_velocity_fps=2.0, critical_velocity_fps=3.0))
+        r = sc.screen(sc.ScreeningInput(20, bap03="B", channel_velocity_fps=2.0, critical_velocity_fps=3.0,
+                                        culvert_outlet_velocity_fps=v_out))
+        assert (r.score > base.score) == (v_out > 3.0)
+        assert r.score >= base.score
+
     def test_poor_scour_condition_overrides_stable_appraisal(self):
         a = sc.screen(sc.ScreeningInput(50, bap03="A", bc11="9"))
         b = sc.screen(sc.ScreeningInput(50, bap03="A", bc11="3"))

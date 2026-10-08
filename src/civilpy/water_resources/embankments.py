@@ -241,6 +241,7 @@ class OpeningCandidate:
     crest_elev: float            # highest ground on the crossing
     length_ft: float
     ponded_volume_ft3: float     # what a solid-embankment model stores behind it
+    crest_xy: tuple | None = None  # where the crossing tops the fill (the road, for a culvert)
 
     @property
     def fill_height_ft(self):
@@ -252,11 +253,15 @@ class OpeningCandidate:
 
 
 def _profile_max(grid, p, q, step):
+    """(highest ground on the straight line p -> q, its (row, col))."""
     n = max(int(math.hypot(q[0] - p[0], q[1] - p[1]) / step), 2)
     rr = np.linspace(p[0], q[0], n + 1).round().astype(int)
     cc = np.linspace(p[1], q[1], n + 1).round().astype(int)
     vals = grid.z[rr, cc]
-    return float(np.nanmax(vals)) if np.isfinite(vals).any() else math.nan
+    if not np.isfinite(vals).any():
+        return math.nan, None
+    i = int(np.nanargmax(vals))
+    return float(vals[i]), (int(rr[i]), int(cc[i]))
 
 
 def hidden_openings(grid: DemGrid, *, max_breach_ft: float = 150.0, min_depth_ft: float = 1.0,
@@ -282,10 +287,10 @@ def hidden_openings(grid: DemGrid, *, max_breach_ft: float = 150.0, min_depth_ft
         for idx in order[:200]:
             r, c = tr[idx], tc[idx]
             src = (ir[r, c], ic[r, c])
-            crest = _profile_max(grid, src, (r, c), 0.5)
+            crest, at = _profile_max(grid, src, (r, c), 0.5)
             if not math.isfinite(crest) or crest - dep.bottom_elev < min_embankment_ft:
                 continue
             found.append(OpeningCandidate(dep, grid.xy(*src), grid.xy(r, c), dep.bottom_elev, float(z[r, c]),
-                                          crest, float(dist[r, c]), dep.volume_ft3))
+                                          crest, float(dist[r, c]), dep.volume_ft3, grid.xy(*at)))
             break
     return sorted(found, key=lambda o: -o.ponded_volume_ft3)

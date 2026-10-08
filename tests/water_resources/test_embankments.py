@@ -129,6 +129,11 @@ class TestHiddenOpenings:
         assert c.crest_elev == pytest.approx(100 + 0.004 * 300 + height, abs=0.5)
         assert c.downstream_elev < c.upstream_elev
         assert c.ponded_volume_ft3 > 0
+        # the crest point is on the fill's flat top (30 ft wide, centred on the fill line)
+        cx, cy = c.crest_xy
+        a = math.radians(angle)
+        u = -(cx - 300) * math.sin(a) + (cy - 300) * math.cos(a)
+        assert abs(u) <= 15 + CELL
 
     def test_opening_through_fill_leaves_nothing_to_find(self):
         assert em.hidden_openings(valley(opening_ft=40.0)) == []
