@@ -217,6 +217,97 @@ class Sample:
         return 100.0 * self.recovery_in / self.length_in
 
 
+# --------------------------------------------------------------- lithology
+
+ROCK_NAMES = ("SHALE", "LIMESTONE", "SANDSTONE", "SILTSTONE", "DOLOMITE", "CLAYSTONE", "MUDSTONE", "COAL",
+              "BEDROCK", "ROCK")
+#: field rock-strength terms (ODOT / ISRM descriptive scale) that count as weak
+WEAK_ROCK = ("extremely weak", "very weak", "weak")
+#: weathering grades (the logged range's worse end) at which rock no longer counts as scour-resistant
+WEATHERED_OUT = ("highly", "severely", "completely")
+#: material groups, in display order
+GROUPS = ("pavement", "topsoil", "granular", "silt", "clay", "organic", "rock", "unknown")
+
+
+def material_group(classification: str | None = None, description: str | None = None,
+                   constituents: tuple = (), system: str | None = None) -> str:
+    """Coarse material group of a logged layer: ``granular`` (AASHTO A-1,
+    A-2, A-3), ``silt`` (A-4, A-5), ``clay`` (A-6, A-7), ``organic`` (A-8),
+    ``rock``, ``pavement``, ``topsoil`` or ``unknown`` - from the AASHTO /
+    ODOT class when logged, else the rock system or the words used."""
+    c = (classification or "").upper().replace(" ", "")
+    words = " ".join([description or ""] + [str(x) for x in constituents]).upper()
+    if "PAVEMENT" in c or "ASPHALT" in words or c in ("BASE",):
+        return "pavement"
+    if "TOPSOIL" in c or (not c and "TOPSOIL" in words):
+        return "topsoil"
+    if (system or "").upper() == "ROCK" or any(r in c for r in ROCK_NAMES):
+        return "rock"
+    if c.startswith("A-"):
+        major = c[2:3]
+        return {"1": "granular", "2": "granular", "3": "granular", "4": "silt", "5": "silt",
+                "6": "clay", "7": "clay", "8": "organic"}.get(major, "unknown")
+    if any(r in words for r in ROCK_NAMES[:-2]):
+        return "rock"
+    # the head noun of "sandy silt", "silty clay", "gravel and sand": the last soil noun before any "with"
+    nouns = {"GRAVEL": "granular", "SAND": "granular", "SILT": "silt", "CLAY": "clay", "PEAT": "organic"}
+    head = [nouns[w] for w in words.split(" WITH ")[0].replace(",", " ").split() if w in nouns]
+    return head[-1] if head else "unknown"
+
+
+@dataclass(frozen=True)
+class Layer:
+    """One logged stratum (a DIGGS ``LithologyObservation``)."""
+
+    depth_top_ft: float
+    depth_bottom_ft: float
+    system: str | None = None            # SOIL | ROCK as logged
+    classification: str | None = None    # AASHTO / ODOT class or rock name (ODOT "Graphic")
+    uscs: str | None = None
+    description: str | None = None
+    constituents: tuple = ()             # major first
+    color: str | None = None
+    consistency: str | None = None       # cohesive soils / relative density
+    moisture: str | None = None
+    rock_strength: str | None = None
+    rock_weathering: str | None = None
+    recovery_pct: float | None = None
+    rqd_pct: float | None = None
+
+    @property
+    def thickness_ft(self) -> float:
+        return self.depth_bottom_ft - self.depth_top_ft
+
+    @property
+    def group(self) -> str:
+        return material_group(self.classification, self.description, self.constituents, self.system)
+
+    @property
+    def label(self) -> str:
+        """Short text for a drawing: class (or major constituent) and consistency / strength."""
+        name = self.classification or (self.constituents[0] if self.constituents else None) or self.group
+        extra = self.rock_strength or self.consistency
+        return f"{name}{', ' + extra if extra else ''}"
+
+    def scour_resistant(self, min_rqd_pct: float = 50.0) -> bool:
+        """Screening test for rock that limits scour: a rock layer not logged
+        weak (a range at its weaker end) nor highly / severely / completely
+        weathered, with RQD at least ``min_rqd_pct`` when RQD is logged.  Weak
+        or slaking rock (most Ohio shales) erodes and is NOT counted - HEC-18
+        treats it as erodible rock needing its own analysis."""
+        if self.group != "rock":
+            return False
+        strength = (self.rock_strength or "").strip().lower()
+        lower = strength.split(" to ")[0].strip()          # a logged range counts at its weaker end
+        if lower in WEAK_ROCK:
+            return False
+        if (self.rock_weathering or "").strip().lower().split(" to ")[-1] in WEATHERED_OUT:
+            return False
+        if self.rqd_pct is not None and self.rqd_pct < min_rqd_pct:
+            return False
+        return bool(strength) or self.rqd_pct is not None
+
+
 @dataclass
 class Borehole:
     """A single subsurface boring: header location/geometry plus the
@@ -237,6 +328,8 @@ class Borehole:
     samples: list[Sample] = field(default_factory=list)
     spt: list[SPTResult] = field(default_factory=list)
     grading: list[GradingResult] = field(default_factory=list)
+    layers: list[Layer] = field(default_factory=list)
+    depth_to_rock_ft: float | None = None   # as reported on the log header
 
     def elevation_at(self, depth_ft: float) -> float | None:
         """Ground-surface elevation minus ``depth_ft`` (None if the collar
@@ -269,3 +362,23 @@ class Borehole:
         input."""
         g = self.grading_at(depth_ft)
         return g.d50 if g else None
+
+    def layer_at(self, depth_ft: float) -> Layer | None:
+        """The logged layer containing ``depth_ft`` (None outside the log)."""
+        for lay in self.layers:
+            if lay.depth_top_ft <= depth_ft < lay.depth_bottom_ft:
+                return lay
+        return None
+
+    def rock_top_ft(self) -> float | None:
+        """Depth to rock: the header value, else the first rock layer."""
+        if self.depth_to_rock_ft is not None:
+            return self.depth_to_rock_ft
+        tops = [lay.depth_top_ft for lay in self.layers if lay.group == "rock"]
+        return min(tops) if tops else None
+
+    def resistant_rock_top_ft(self, min_rqd_pct: float = 50.0) -> float | None:
+        """Depth to the first scour-resistant rock layer
+        (:meth:`Layer.scour_resistant`), or None."""
+        tops = [lay.depth_top_ft for lay in self.layers if lay.scour_resistant(min_rqd_pct)]
+        return min(tops) if tops else None

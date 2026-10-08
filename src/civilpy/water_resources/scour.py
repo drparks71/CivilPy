@@ -22,7 +22,7 @@ internally), angles in degrees.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 #: Gravitational acceleration, ft/s^2.
 G_FT_S2 = 32.2
@@ -223,3 +223,71 @@ def pier_scour_from_boring(
         froude=froude_number(approach_velocity_fps, approach_depth_ft),
         k1=k1, k2=k2, k3=k3, k4=k4, d50_mm=d50_mm, d95_mm=d95_mm,
     )
+
+
+@dataclass
+class ScourThroughStrata:
+    """Design scour at one substructure unit set against a boring."""
+
+    streambed_elev_ft: float
+    degradation_ft: float
+    contraction_ft: float
+    local_ft: float
+    total_ft: float
+    unlimited_elev_ft: float             # streambed - total scour
+    resistant_rock_elev_ft: float | None  # top of scour-resistant rock at the boring
+    design_elev_ft: float                # unlimited, floored at resistant rock
+    limited_by_rock: bool
+    strata: list = field(default_factory=list)   # layers the scour passes through, top down
+    notes: list = field(default_factory=list)
+
+    @property
+    def scour_depth_ft(self) -> float:
+        return self.streambed_elev_ft - self.design_elev_ft
+
+
+def scour_through_strata(streambed_elev_ft: float, *, contraction_ft: float, local_ft: float,
+                         degradation_ft: float = 0.0, borehole=None,
+                         min_rqd_pct: float = 50.0) -> ScourThroughStrata:
+    """Total scour (HEC-18: long-term degradation + contraction + local) at a
+    unit, carried down through the logged strata of ``borehole`` (a
+    :class:`civilpy.geotech.boring.Borehole` with a collar elevation).
+
+    The scour line stops at the top of scour-resistant rock
+    (:meth:`~civilpy.geotech.boring.Layer.scour_resistant`); weak or
+    weathered rock and every soil layer are scoured through.  Cohesive
+    layers (silt, clay) are noted: HEC-18 lets their ultimate scour be
+    reduced only from site erosion testing (time-rate analysis), so the full
+    depth stands here.
+    """
+    total = max(degradation_ft, 0.0) + max(contraction_ft, 0.0) + max(local_ft, 0.0)
+    unlimited = streambed_elev_ft - total
+    notes, strata = [], []
+    rock_elev = None
+    if borehole is not None and getattr(borehole, "ground_elevation_ft", None) is not None and borehole.layers:
+        collar = borehole.ground_elevation_ft
+        top = borehole.resistant_rock_top_ft(min_rqd_pct)
+        rock_elev = None if top is None else collar - top
+        for lay in borehole.layers:
+            z_top, z_bot = collar - lay.depth_top_ft, collar - lay.depth_bottom_ft
+            lo = max(z_bot, max(unlimited, rock_elev if rock_elev is not None else -math.inf))
+            hi = min(z_top, streambed_elev_ft)
+            if hi > lo:
+                strata.append({"group": lay.group, "label": lay.label, "top_elev_ft": round(hi, 2),
+                               "bottom_elev_ft": round(lo, 2), "scour_resistant": lay.scour_resistant(min_rqd_pct)})
+        if any(s["group"] in ("silt", "clay") for s in strata):
+            notes.append("scour passes through cohesive layers: HEC-18 allows a reduction only from erosion "
+                         "testing of those soils (time-rate) - full depth used")
+        if any(s["group"] == "rock" for s in strata):
+            notes.append("scour passes through weak / weathered rock, treated as erodible")
+        deepest = collar - (borehole.total_depth_ft or max(lay.depth_bottom_ft for lay in borehole.layers))
+        if unlimited < deepest and (rock_elev is None or rock_elev < unlimited):
+            notes.append(f"scour line {unlimited:.1f} is below the bottom of the boring {deepest:.1f}")
+    elif borehole is None:
+        notes.append("no boring: strata unknown, scour not limited by rock")
+    else:
+        notes.append("boring has no collar elevation or no logged layers: scour not limited")
+    limited = rock_elev is not None and rock_elev > unlimited
+    design = rock_elev if limited else unlimited
+    return ScourThroughStrata(streambed_elev_ft, degradation_ft, contraction_ft, local_ft, total, unlimited,
+                              rock_elev, min(design, streambed_elev_ft), limited, strata, notes)

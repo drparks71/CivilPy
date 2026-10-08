@@ -31,6 +31,7 @@ from pathlib import Path
 from civilpy.geotech.boring import (
     Borehole,
     DriveIncrement,
+    Layer,
     GradingPoint,
     GradingResult,
     Sample,
@@ -164,7 +165,18 @@ def parse_diggs(source) -> list[Borehole]:
         if sample is not None:
             bh.samples.append(sample)
 
+    for sys_el in (e for e in root.iter() if _ln(e.tag) == "LithologySystem"):
+        bh = resolve(_ref_id(sys_el, "samplingFeatureRef"))
+        if bh is None:
+            continue
+        system = (_text(sys_el, "lithologyClassificationType") or "").strip().upper() or None
+        for obs in _descendants(sys_el, "LithologyObservation"):
+            lay = _parse_layer(obs, system)
+            if lay is not None:
+                bh.layers.append(lay)
+
     for bh in holes.values():
+        bh.layers = _merge_layers(bh.layers)
         bh.spt.sort(key=lambda s: s.depth_ft)
         bh.grading.sort(key=lambda g: g.depth_ft)
         bh.samples.sort(key=lambda s: s.depth_top_ft)
@@ -223,7 +235,13 @@ def _parse_borehole(el, project: str | None) -> Borehole:
             # a single value is a depth/elevation reading
             water_depth = wl_coords[-1]
 
+    depth_to_rock = None
+    for prm in _descendants(el, "Parameter"):
+        if (_text(prm, "parameterName") or "").strip().lower() == "depth to rock":
+            depth_to_rock = _float(_text(prm, "parameterValue"))
+
     return Borehole(
+        depth_to_rock_ft=depth_to_rock,
         boring_id=name,
         project=project,
         ground_elevation_ft=elev,
@@ -315,6 +333,70 @@ def _parse_sample(el) -> Sample | None:
         depth_bottom_ft=bottom,
         method=method,
         recovery_in=recovery,
+    )
+
+
+def _merge_layers(layers: list[Layer]) -> list[Layer]:
+    """One layer per depth interval: ODOT files log a rock interval in both
+    the SOIL and the ROCK lithology systems - merged field by field (the
+    first non-empty value wins, the ROCK system first)."""
+    import dataclasses
+
+    by_iv: dict = {}
+    order = sorted(layers, key=lambda lay: (lay.depth_top_ft, lay.depth_bottom_ft, lay.system != "ROCK"))
+    for lay in order:
+        key = (round(lay.depth_top_ft, 3), round(lay.depth_bottom_ft, 3))
+        cur = by_iv.get(key)
+        if cur is None:
+            by_iv[key] = lay
+            continue
+        merged = {}
+        for f in dataclasses.fields(Layer):
+            a, b = getattr(cur, f.name), getattr(lay, f.name)
+            merged[f.name] = a if a not in (None, (), "") else b
+        by_iv[key] = Layer(**merged)
+    return sorted(by_iv.values(), key=lambda lay: lay.depth_top_ft)
+
+
+def _clean(v: str | None) -> str | None:
+    v = (v or "").strip()
+    return v or None
+
+
+def _parse_layer(el, system: str | None) -> Layer | None:
+    loc = _first(el, "location")
+    coords = _poslist_floats(loc) if loc is not None else []
+    if len(coords) < 2 or coords[1] <= coords[0]:
+        return None
+    lith = _first(el, "Lithology")
+    if lith is None:
+        return None
+    graphic = None
+    for prm in _descendants(lith, "Parameter"):
+        if (_text(prm, "parameterName") or "").strip().lower() == "graphic":
+            graphic = _clean(_text(prm, "parameterValue"))
+    constituents = []
+    for con in _descendants(lith, "Constituent"):
+        val = _clean(_text(con, "codeValue"))
+        if val:
+            major = (_text(con, "abundanceCode") or "").strip().lower() == "major"
+            constituents.insert(0, val) if major else constituents.append(val)
+    color = None
+    col = _first(lith, "Color")
+    if col is not None:
+        color = _clean(_text(col, "colorName"))
+    fp = _first(lith, "FieldProperties")
+
+    def prop(name):
+        return _clean(_text(fp, name)) if fp is not None else None
+
+    return Layer(
+        depth_top_ft=coords[0], depth_bottom_ft=coords[1], system=system,
+        classification=graphic, uscs=_clean(_text(lith, "classificationCode")),
+        description=_clean(_text(lith, "lithDescription")), constituents=tuple(constituents), color=color,
+        consistency=prop("consistency"), moisture=prop("moistureCondition"),
+        rock_strength=prop("rockStrength"), rock_weathering=prop("rockWeathering"),
+        recovery_pct=_float(prop("unitRecoveryLength")), rqd_pct=_float(prop("unitRQDLength")),
     )
 
 
