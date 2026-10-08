@@ -8,7 +8,10 @@
 
 Open-channel hydraulics (:mod:`~civilpy.water_resources.open_channel`,
 irregular sections :mod:`~civilpy.water_resources.cross_section`),
-pressurized pipe flow (:mod:`~civilpy.water_resources.pipe_flow`), bridge
+pressurized pipe flow (:mod:`~civilpy.water_resources.pipe_flow`), HDS-5
+culvert analysis and roadway overtopping (:mod:`~civilpy.water_resources.culvert`),
+embankments and the openings bare-earth LiDAR cannot show
+(:mod:`~civilpy.water_resources.embankments`), bridge
 scour (:mod:`~civilpy.water_resources.scour`), ODOT culvert headwall
 standards (:mod:`~civilpy.water_resources.hydraulics`), USGS StreamStats
 basins and peak flows (:mod:`~civilpy.water_resources.streamstats`), NOAA
