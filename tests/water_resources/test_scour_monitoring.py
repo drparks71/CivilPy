@@ -423,3 +423,24 @@ class TestScreening:
                                                (30, "0", "watch")])
     def test_tiers(self, ari, bap03, tier):
         assert sc.screen(sc.ScreeningInput(ari, bap03=bap03)).tier == tier
+
+
+# ── vulnerability on record (alert priority) ──────────────────────────────
+
+@pytest.mark.parametrize("b3", ["A", "B", "0", None, " c ", "D", "E", "U"])
+@pytest.mark.parametrize("bc11", [None, "N", "9", "5", "4", "2"])
+@pytest.mark.parametrize("b4", [None, "", "Y", "N"])
+def test_on_record_iff_coded(b3, bc11, b4):
+    got = sc.vulnerability_on_record(b3, bc11, b4)
+    expect = ((sc.clean_code(b3) in sc.VULNERABLE_CODES)
+              + (bc11 is not None and bc11.isdigit() and int(bc11) <= sc.POOR_SCOUR_CONDITION)
+              + (b4 in ("Y", "N")))
+    assert len(got) == expect
+
+
+@pytest.mark.parametrize("ari", [2.0, 25.0, 500.0])
+def test_result_carries_on_record_and_appraisal_pending_is_not_on_record(ari):
+    pending = sc.screen(sc.ScreeningInput(ari, bap03="0", bc11="7"))
+    critical = sc.screen(sc.ScreeningInput(ari, bap03="D", bc11="7"))
+    assert pending.on_record == [] and critical.on_record == ["B.AP.03 D"]
+    assert critical.as_dict()["on_record"] == critical.on_record

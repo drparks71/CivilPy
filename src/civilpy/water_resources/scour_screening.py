@@ -49,6 +49,11 @@ SCOUR_VULNERABILITY = {
 }
 UNCODED_VULNERABILITY = 0.6
 
+#: B.AP.03 codes that record a scour vulnerability (scour critical, or foundations unknown)
+VULNERABLE_CODES = {"C", "D", "E", "U"}
+#: B.C.11 at or below this (4 = poor) is scour damage on record
+POOR_SCOUR_CONDITION = 4
+
 INSPECT_SCORE = 50.0
 WATCH_SCORE = 25.0
 
@@ -63,6 +68,26 @@ def hazard(ari_yr: float | None) -> float:
     if not ari_yr or ari_yr <= 1.0:
         return 0.0
     return min(1.0, math.log10(ari_yr) / 2.0)
+
+
+def vulnerability_on_record(bap03=None, bc11=None, bap04=None) -> list[str]:
+    """What in the SNBI record says this bridge is vulnerable to scour, as
+    reasons (empty when nothing does).  Alerts list these bridges first: a
+    rare storm over a bridge coded scour critical, with scour damage logged,
+    or with a scour plan of action outranks the same storm over one whose
+    appraisal simply hasn't been done (B.AP.03 = 0)."""
+    out = []
+    b3 = clean_code(bap03)
+    if b3 in VULNERABLE_CODES:
+        out.append(f"B.AP.03 {b3}")
+    sc = _rating(bc11)
+    if sc is not None and sc <= POOR_SCOUR_CONDITION:
+        out.append(f"B.C.11 scour condition {sc}")
+    b4 = clean_code(bap04)
+    if b4 in ("Y", "N"):
+        out.append("B.AP.04 Y: scour plan of action in place" if b4 == "Y"
+                   else "B.AP.04 N: scour plan of action required, not implemented")
+    return out
 
 
 @dataclass
@@ -94,11 +119,12 @@ class ScreeningResult:
     vulnerability: float
     overtopping_likely: bool
     reasons: list = field(default_factory=list)
+    on_record: list = field(default_factory=list)   # vulnerability_on_record(): alert these first
 
     def as_dict(self):
         return {"score": round(self.score, 1), "tier": self.tier, "hazard": round(self.hazard, 3),
                 "vulnerability": round(self.vulnerability, 3), "overtopping_likely": self.overtopping_likely,
-                "reasons": self.reasons}
+                "reasons": self.reasons, "on_record": self.on_record}
 
 
 def _rating(code):
@@ -172,4 +198,5 @@ def screen(inp: ScreeningInput) -> ScreeningResult:
     score = min(100.0, score)
     tier = ("inspect" if score >= INSPECT_SCORE or (over and v >= 0.8)
             else "watch" if score >= WATCH_SCORE else "none")
-    return ScreeningResult(score, tier, h, v, over, reasons)
+    return ScreeningResult(score, tier, h, v, over, reasons,
+                           vulnerability_on_record(inp.bap03, inp.bc11, inp.bap04))
