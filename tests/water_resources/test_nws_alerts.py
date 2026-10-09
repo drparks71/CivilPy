@@ -74,6 +74,40 @@ def test_iem_feature_matches_nws_key():
     assert a.emergency and a.is_flood_warning and a.ends == T0 + timedelta(hours=3)
 
 
+def iem_message(status, begin, expire, polygon_end=None, eventid=68):
+    return {"geometry": SQUARE, "properties": {
+        "wfo": "ILN", "phenomena": "FL", "significance": "W", "eventid": eventid, "year": 2026, "status": status,
+        "utc_issue": T0.isoformat(), "utc_polygon_begin": begin.isoformat(), "utc_expire": expire.isoformat(),
+        "utc_polygon_end": (polygon_end or expire).isoformat(), "event_label": "Flood Warning",
+        "product_id": f"{begin:%Y%m%d%H%M}-KILN-FLWILN"}}
+
+
+@pytest.mark.parametrize("seed", range(10))
+def test_iem_interval_messages_run_the_warning_its_full_length(seed):
+    """IEM's polygon_end is only when the next message replaced the polygon;
+    replayed through current(), a warning extended and then cancelled is in
+    force from NEW until the cancel, as it was live."""
+    rng = random.Random(seed)
+    t, expire, feats = T0, T0 + timedelta(hours=rng.randint(6, 30)), []
+    for status in ["NEW"] + ["EXT" if rng.random() < 0.5 else "CON" for _ in range(rng.randint(0, 4))]:
+        if status == "EXT":
+            expire += timedelta(hours=rng.randint(2, 12))
+        nxt = t + timedelta(hours=rng.randint(1, 5))
+        feats.append(iem_message(status, t, expire, polygon_end=min(nxt, expire)))
+        if nxt >= expire:                                          # updates come before the warning runs out
+            break
+        t = nxt
+    cancel = nxt if rng.random() < 0.5 and nxt < expire else None
+    if cancel:
+        feats.append(iem_message("CAN", cancel, cancel))
+    alerts = [nws.from_iem_feature(f) for f in feats]
+    assert len({a.key for a in alerts}) == 1 and len({a.message_id for a in alerts}) == len(alerts)
+    stop = cancel or expire
+    for h in range(0, 60):
+        at = T0 + timedelta(hours=h, minutes=30)
+        assert (alerts[0].key in nws.current(alerts, at)) == (at < stop)
+
+
 @pytest.mark.parametrize("seed", range(10))
 def test_current_follows_the_latest_message(seed):
     """A hazard is in force from its first message until it is cancelled /

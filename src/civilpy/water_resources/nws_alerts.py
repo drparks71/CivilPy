@@ -14,7 +14,9 @@ Two sources, one shape (:class:`Alert`):
   last check* and misses nothing even when it polls slowly.
 * **Iowa Environmental Mesonet** (IEM) storm-based warning archive - every
   polygon warning since the 2000s, for replaying past storms and
-  back-testing a trigger.
+  back-testing a trigger.  :func:`fetch_iem` returns every message of each
+  warning (NEW, then CON / EXT / CAN / EXP with their polygons and end
+  times), the same sequence the live service sends.
 
 An NWS hazard is identified by its P-VTEC string
 (``/O.NEW.KILN.FF.W.0012.250403T0100Z-250403T0400Z/``: action, office,
@@ -35,6 +37,7 @@ from datetime import datetime, timedelta, timezone
 
 NWS_API = "https://api.weather.gov"
 IEM_SBW = "https://mesonet.agron.iastate.edu/geojson/sbw.py"
+IEM_SBW_INTERVAL = "https://mesonet.agron.iastate.edu/api/1/vtec/sbw_interval.geojson"
 
 FLOOD_WARNINGS = {("FF", "W"), ("FA", "W"), ("FL", "W")}
 FLOOD_WATCHES = {("FF", "A"), ("FA", "A"), ("FL", "A")}
@@ -153,21 +156,28 @@ def from_nws_feature(feature: dict) -> list[Alert]:
 
 
 def from_iem_feature(feature: dict) -> Alert:
-    """One IEM storm-based-warning feature -> :class:`Alert`."""
+    """One IEM storm-based-warning feature -> :class:`Alert`.  Takes both
+    the ``geojson/sbw.py`` shape and the ``api/1/vtec/sbw_interval`` shape
+    (``utc_`` prefixed times, one feature per message).  The message is
+    sent when its polygon begins and the hazard runs to the message's
+    VTEC end (``expire``); ``polygon_end`` is only when the next message
+    replaced this polygon."""
     p = feature.get("properties", feature)
-    issue = _utc(p.get("issue")) or _utc(p.get("polygon_begin"))
+    t = lambda k: _utc(p.get("utc_" + k)) or _utc(p.get(k))          # noqa: E731
+    issue = t("issue") or t("polygon_begin")
     year = p.get("year") or issue.year
     office = str(p.get("wfo", ""))
     office = "K" + office if len(office) == 3 else office            # IEM drops the K of the VTEC office id
     key = f"{office}.{p['phenomena']}.{p['significance']}.{int(p['eventid']):04d}.{year}"
     damage = p.get("damagetag") or p.get("floodtag_damage")
-    return Alert(key=key, message_id=p.get("product_id") or key, source="iem", phenomena=p.get("phenomena"),
-                 significance=p.get("significance"), action=(p.get("status") or "NEW").upper(),
-                 event_name=p.get("ps") or f"{p.get('phenomena')}.{p.get('significance')}",
-                 sent=_utc(p.get("polygon_begin")) or issue, begins=_utc(p.get("polygon_begin")) or issue,
-                 ends=_utc(p.get("polygon_end")) or _utc(p.get("expire")), area_desc=p.get("wfo", ""),
+    sent = t("polygon_begin") or issue
+    return Alert(key=key, message_id=p.get("product_id") or f"{key}.{sent:%Y%m%dT%H%M}", source="iem",
+                 phenomena=p.get("phenomena"), significance=p.get("significance"),
+                 action=(p.get("status") or "NEW").upper(),
+                 event_name=p.get("ps") or p.get("event_label") or f"{p.get('phenomena')}.{p.get('significance')}",
+                 sent=sent, begins=sent, ends=t("expire") or t("polygon_end"), area_desc=p.get("wfo", ""),
                  polygons=_rings(feature.get("geometry")), damage_threat=(damage or None) and str(damage).upper(),
-                 emergency=bool(p.get("is_emergency")), headline=p.get("ps") or "")
+                 emergency=bool(p.get("is_emergency")), headline=p.get("ps") or p.get("event_label") or "")
 
 
 def fetch_nws(area: str = "OH", *, start: datetime | None = None, end: datetime | None = None,
@@ -199,16 +209,33 @@ def fetch_nws(area: str = "OH", *, start: datetime | None = None, end: datetime 
 
 
 def fetch_iem(state: str, start: datetime, end: datetime, *, session=None, timeout: float = 120) -> list[Alert]:
-    """Storm-based (polygon) warnings for a state from the IEM archive, for
-    replaying a past storm."""
+    """Every message of the storm-based (polygon) warnings for a state from
+    the IEM archive, for replaying a past storm.  ``geojson/sbw.py`` names
+    the state's warnings (and their damage tags); ``sbw_interval`` gives
+    each one's later messages, per issuing office, so a warning extended
+    or cancelled runs exactly as long as it did live."""
     import requests
 
     s = session or requests
     fmt = "%Y-%m-%dT%H:%MZ"
-    r = s.get(IEM_SBW, params={"sts": start.astimezone(timezone.utc).strftime(fmt),
-                               "ets": end.astimezone(timezone.utc).strftime(fmt), "states": state}, timeout=timeout)
+    sts, ets = start.astimezone(timezone.utc).strftime(fmt), end.astimezone(timezone.utc).strftime(fmt)
+    r = s.get(IEM_SBW, params={"sts": sts, "ets": ets, "states": state}, timeout=timeout)
     r.raise_for_status()
-    return [from_iem_feature(f) for f in r.json().get("features", [])]
+    first = [from_iem_feature(f) for f in r.json().get("features", [])]
+    keys = {a.key for a in first}
+    damage = {a.key: a.damage_threat for a in first if a.damage_threat}
+    out, seen = [], set()
+    for wfo in sorted({a.key.split(".")[0][-3:] for a in first}):
+        r = s.get(IEM_SBW_INTERVAL, params={"begints": sts, "endts": ets, "wfo": wfo, "only_new": "false",
+                                            "include_can": "true"}, timeout=timeout)
+        r.raise_for_status()
+        for f in r.json().get("features", []):
+            a = from_iem_feature(f)
+            if a.key in keys:
+                a.damage_threat = a.damage_threat or damage.get(a.key)
+                out.append(a)
+                seen.add(a.key)
+    return out + [a for a in first if a.key not in seen]     # an office's interval call missed it: NEW alone
 
 
 def current(alerts, at: datetime, *, grace: timedelta = timedelta(0)) -> dict[str, Alert]:
