@@ -56,6 +56,18 @@ POOR_SCOUR_CONDITION = 4
 
 INSPECT_SCORE = 50.0
 WATCH_SCORE = 25.0
+#: score at which a bridge with vulnerability on record must be seen immediately
+IMMEDIATE_SCORE = 75.0
+
+#: storm severity at the bridge: (lowest return period in years, class), rarest first
+SEVERITY_CLASSES = [(100.0, "extreme"), (25.0, "severe"), (10.0, "moderate"), (2.0, "common")]
+SEVERITY_ORDER = ["minor", "common", "moderate", "severe", "extreme"]
+
+#: response levels, least to most urgent, and what each asks of the district
+RESPONSE_LEVELS = ["none", "monitor", "1week", "24h", "immediate"]
+RESPONSE_LABELS = {"immediate": "Inspect immediately", "24h": "Inspect within 24 hours",
+                   "1week": "Inspect within 1 week", "monitor": "Monitor (no inspection deadline)",
+                   "none": "No action"}
 
 
 def clean_code(code) -> str:
@@ -90,6 +102,50 @@ def vulnerability_on_record(bap03=None, bc11=None, bap04=None) -> list[str]:
     return out
 
 
+def storm_severity(ari_yr: float | None, damage_threat: str | None = None) -> str:
+    """Class of the storm at one bridge from its return period: minor (under
+    2-yr), common (2-10), moderate (10-25), severe (25-100), extreme (100+).
+    An NWS flash flood damage threat raises it: CONSIDERABLE to at least
+    severe, CATASTROPHIC (a flash flood emergency) to extreme."""
+    cls = "minor"
+    for lo, name in SEVERITY_CLASSES:
+        if ari_yr and ari_yr >= lo:
+            cls = name
+            break
+    threat = str(damage_threat or "").upper()
+    floor = {"CONSIDERABLE": "severe", "CATASTROPHIC": "extreme"}.get(threat)
+    if floor and SEVERITY_ORDER.index(floor) > SEVERITY_ORDER.index(cls):
+        cls = floor
+    return cls
+
+
+def response_level(score: float, tier: str, overtopping: bool, on_record: list, damage_threat: str | None = None) -> str:
+    """How soon the district should look at the bridge.
+
+    * **immediate** - vulnerability on record (:func:`vulnerability_on_record`)
+      and either overtopping evidence or a score of :data:`IMMEDIATE_SCORE`+;
+      or any flagged bridge under an NWS flash flood emergency (CATASTROPHIC).
+    * **24h** - the *inspect* tier (score 50+, or overtopping on a bridge of
+      vulnerability 0.8+).
+    * **1week** - the *watch* tier with vulnerability on record.
+    * **monitor** - the *watch* tier otherwise (no deadline; listed in the daily digest).
+    * **none** - not flagged.
+    """
+    if tier == "none":
+        return "none"
+    if on_record and (overtopping or score >= IMMEDIATE_SCORE):
+        return "immediate"
+    if str(damage_threat or "").upper() == "CATASTROPHIC":
+        return "immediate"
+    if tier == "inspect":
+        return "24h"
+    return "1week" if on_record else "monitor"
+
+
+def response_rank(level: str | None) -> int:
+    return RESPONSE_LEVELS.index(level) if level in RESPONSE_LEVELS else 0
+
+
 @dataclass
 class ScreeningInput:
     event_ari_yr: float | None                 # return period of the event at this bridge
@@ -109,6 +165,8 @@ class ScreeningInput:
     culvert_headwater_ft: float | None = None
     culvert_overtopping_cfs: float | None = None
     culvert_outlet_velocity_fps: float | None = None
+    # NWS flash flood damage threat of a warning over the basin (CONSIDERABLE / CATASTROPHIC), if any
+    nws_damage_threat: str | None = None
 
 
 @dataclass
@@ -120,11 +178,14 @@ class ScreeningResult:
     overtopping_likely: bool
     reasons: list = field(default_factory=list)
     on_record: list = field(default_factory=list)   # vulnerability_on_record(): alert these first
+    severity: str = "minor"                         # storm_severity()
+    response: str = "none"                          # response_level()
 
     def as_dict(self):
         return {"score": round(self.score, 1), "tier": self.tier, "hazard": round(self.hazard, 3),
                 "vulnerability": round(self.vulnerability, 3), "overtopping_likely": self.overtopping_likely,
-                "reasons": self.reasons, "on_record": self.on_record}
+                "reasons": self.reasons, "on_record": self.on_record, "severity": self.severity,
+                "response": self.response}
 
 
 def _rating(code):
@@ -198,5 +259,9 @@ def screen(inp: ScreeningInput) -> ScreeningResult:
     score = min(100.0, score)
     tier = ("inspect" if score >= INSPECT_SCORE or (over and v >= 0.8)
             else "watch" if score >= WATCH_SCORE else "none")
-    return ScreeningResult(score, tier, h, v, over, reasons,
-                           vulnerability_on_record(inp.bap03, inp.bc11, inp.bap04))
+    if inp.nws_damage_threat:
+        reasons.append(f"NWS flash flood damage threat {str(inp.nws_damage_threat).upper()}")
+    rec = vulnerability_on_record(inp.bap03, inp.bc11, inp.bap04)
+    return ScreeningResult(score, tier, h, v, over, reasons, rec,
+                           storm_severity(inp.event_ari_yr, inp.nws_damage_threat),
+                           response_level(score, tier, over, rec, inp.nws_damage_threat))
