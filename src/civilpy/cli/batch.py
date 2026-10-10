@@ -16,6 +16,7 @@ dataclass.  Results render to the terminal and, with ``-o/--out``, to a
 from __future__ import annotations
 
 import argparse
+import re
 import shlex
 import sys
 from pathlib import Path
@@ -112,6 +113,17 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+_PLAIN = re.compile(r"[\w@%+=:,./\\-]+", re.ASCII)
+
+
+def _quote(value) -> str:
+    """shlex.quote that leaves Windows paths alone: a backslash is a path
+    separator here, not an escape, and quoting every ``C:\\...`` made the
+    /log lines unreadable (and unreplayable in cmd / PowerShell)."""
+    text = str(value)
+    return text if text and _PLAIN.fullmatch(text) else shlex.quote(text)
+
+
 def one_shot_line(spec: CommandSpec, values: dict, out: Optional[str]) -> str:
     """The replayable command line for /log and provenance."""
     parts = ["civilpy", spec.group, spec.verb]
@@ -120,13 +132,13 @@ def one_shot_line(spec: CommandSpec, values: dict, out: Optional[str]) -> str:
         if value is None or value == arg.default:
             continue
         if arg.positional:
-            parts.append(shlex.quote(str(value)))
+            parts.append(_quote(value))
         elif arg.is_bool:
             parts.append(arg.flag if value else "--no-" + arg.flag[2:])
         else:
-            parts += [arg.flag, shlex.quote(str(value))]
+            parts += [arg.flag, _quote(value)]
     if out:
-        parts += ["-o", shlex.quote(out)]
+        parts += ["-o", _quote(out)]
     return " ".join(parts)
 
 

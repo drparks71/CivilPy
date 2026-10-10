@@ -153,6 +153,10 @@ civilpy = ["structural/res/*.csv", "structural/odot/res/*.csv", "structural/span
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# civilpy has no Django app; a pytest-django plugin found in a shared environment
+# otherwise picks up the fake DJANGO_SETTINGS_MODULE the db_tables tests set and
+# fails their setup
+addopts = "-p no:django"
 
 [tool.coverage.run]
 source = ["src/civilpy"]

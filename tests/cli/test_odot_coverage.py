@@ -9,6 +9,7 @@ paths, and ``odot photos`` against a mocked AssetWise client (the real
 one needs ~/secrets.json and the network; neither is allowed here)."""
 
 import csv
+import os
 from pathlib import Path
 
 import pytest
@@ -160,7 +161,8 @@ def test_photos_default_folder_is_temp_under_home(assetwise, tmp_path, monkeypat
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
     assert execute(["odot", "photos", "1801503"]) == 0
     args = assetwise["args"]
-    assert args["folder"] == tmp_path / "TEMP" / "1801503"
+    expected = Path("C:/TEMP") / "1801503" if os.name == "nt" else tmp_path / "TEMP" / "1801503"
+    assert args["folder"] == expected                 # C:/TEMP is the ODOT convention on Windows
     assert args["photos_only"] is True and args["flat"] is False
 
 

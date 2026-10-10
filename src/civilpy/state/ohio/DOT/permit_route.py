@@ -47,6 +47,7 @@ Example::
 """
 from __future__ import annotations
 
+import datetime
 import logging
 import math
 import re
@@ -58,6 +59,8 @@ from dataclasses import dataclass, field
 from typing import Callable, Optional, Protocol
 
 import requests
+
+_EPOCH = datetime.datetime(1970, 1, 1, tzinfo=datetime.timezone.utc)
 
 logger = logging.getLogger(__name__)
 
@@ -911,7 +914,9 @@ class TIMSBridgeSource:
         yr = a.get("YR_BUILT")
         year = None
         if isinstance(yr, (int, float)) and yr:
-            year = time.gmtime(yr / 1000).tm_year
+            # epoch milliseconds; arithmetic rather than gmtime because Windows'
+            # gmtime rejects dates before 1970 (most of the inventory)
+            year = (_EPOCH + datetime.timedelta(milliseconds=yr)).year
         return BridgeRecord(
             sfn=str(a.get("SFN") or "").strip(), lat=float(lat), lon=float(lon),
             name=(a.get("STR_LOC_CARRIED") or "").strip(),

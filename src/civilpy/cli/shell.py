@@ -17,6 +17,7 @@ one-shot equivalent (``/log``) so a session converts to a script.
 
 from __future__ import annotations
 
+import os
 import shlex
 from pathlib import Path
 from typing import List, Optional
@@ -45,10 +46,22 @@ LOADABLE_EXTS = (".xml", ".csv", ".xlsx", ".las", ".laz", ".3dm")
 
 
 def _split(text: str) -> List[str]:
+    """Split a shell line into tokens.  On Windows the backslash is a path
+    separator, so the POSIX rules (which would turn ``C:\\Users`` into
+    ``C:Users``) are replaced by: whitespace splits, double or single quotes
+    group, nothing escapes."""
     try:
+        if os.name == "nt":
+            return [_unquote(tok) for tok in shlex.split(text, posix=False)]
         return shlex.split(text)
     except ValueError:  # unterminated quote while typing
         return text.split()
+
+
+def _unquote(tok: str) -> str:
+    if len(tok) >= 2 and tok[0] == tok[-1] and tok[0] in "\"'":
+        return tok[1:-1]
+    return tok
 
 
 def _groups() -> List[str]:

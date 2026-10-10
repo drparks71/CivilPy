@@ -23,7 +23,11 @@ import os
 import google.generativeai as genai
 import PIL.Image
 import typing_extensions as typing
-from dotenv import load_dotenv
+try:
+    from dotenv import load_dotenv
+except ImportError:  # python-dotenv is optional: without it the key must already be in the environment
+    def load_dotenv(*_args, **_kwargs) -> bool:
+        return False
 
 
 class DrawingEntry(typing.TypedDict):

@@ -28,6 +28,7 @@ from civilpy.state.ohio.DOT import OSE
 @pytest.fixture
 def home(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))   # what expanduser("~") reads on Windows
     return tmp_path
 
 
