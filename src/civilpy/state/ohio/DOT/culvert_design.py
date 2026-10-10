@@ -133,17 +133,20 @@ def size_culvert(*, q_design_cfs: float, q_check_1pct_cfs: float | None, inlet_i
                  length_ft: float, pavement_low_edge_ft: float, drainage_area_acres: float, tailwater=None,
                  tailwater_1pct=None, max_rise_ft: float | None = None, deep_ravine: bool = False, bikeway: bool = False,
                  families=("round", "ellipse", "pipe_arch", "box"), max_cells: int = MAX_CELLS, method: str = "approximate",
-                 min_cover_ft: float = 1.0) -> dict:
+                 min_cover_ft: float = 1.0, conduits=None) -> dict:
     """The first conduit (1105.1 order, one cell before two) whose design
     headwater meets 1006.2.1 and whose 1 % headwater depth is at most twice
     the rise (1006.2.2).  ``tailwater`` is an elevation, a rating
     ``q -> elevation``, ``None`` (free outfall) or ``"half_dc_d"`` (1105.6.1).
     ``max_rise_ft`` caps the rise (road over the culvert - inlet invert -
     cover).  Returns the selection, the first passing size per family (so
-    the designer sees the shapes side by side) and the controls applied."""
+    the designer sees the shapes side by side) and the controls applied.
+    ``conduits`` replaces the built-in :func:`catalog` with another list of
+    :class:`Conduit` (an agency catalog), kept in its given order."""
     tried, per_family, selected = 0, {}, None
+    cat = list(conduits) if conduits is not None else catalog(families)
     for cells in range(1, max_cells + 1):
-        for c in catalog(families):
+        for c in cat:
             if c.family in per_family and cells == 1:
                 continue
             if max_rise_ft is not None and c.rise_ft + min_cover_ft > max_rise_ft:

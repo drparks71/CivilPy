@@ -83,3 +83,12 @@ def test_half_dc_d_tailwater():
                    inlet="concrete_pipe_groove_headwall")
     tw = cd.half_dc_d_tailwater(c, 30.0)
     assert 599.0 + 1.5 < tw <= 599.0 + 3.0
+
+
+def test_size_culvert_takes_an_agency_catalog():
+    small = [cd.Conduit("round", "18 in RCP", 1.5, 1.5, 0.012, "concrete_pipe_groove_headwall", 0.2),
+             cd.Conduit("box", "4 x 3 ft box", 4.0, 3.0, 0.012, "box_wingwall_30_75", 0.4)]
+    out = cd.size_culvert(q_design_cfs=60.0, q_check_1pct_cfs=90.0, inlet_invert_ft=100.0, outlet_invert_ft=99.0, length_ft=60.0,
+                          pavement_low_edge_ft=110.0, drainage_area_acres=300.0, conduits=small)
+    assert out["selected"] is not None and out["selected"]["conduit"] in ("18 in RCP", "4 x 3 ft box")
+    assert set(out["per_family"]) <= {"round", "box"}
