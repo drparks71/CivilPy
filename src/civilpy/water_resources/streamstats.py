@@ -271,3 +271,45 @@ def delineate_basin(lat: float, lon: float, *, region: str = "OH", session=None,
     b.peak_flows, b.regression = parse_estimate(estimate)
     b.timings_s["flows"] = round(time.time() - t, 1)
     return b
+
+
+# ── monthly flows (ODOT TAF, L&D Vol 2 1010) ──────────────────────────────
+
+MONTHLY_FLOW_GROUP = 7
+#: NSS Ohio monthly-flow regression region that needs only the drainage area
+#: (WRI 02-4068, "Low_Flow_DA_Only"); the lat / land-cover regions need
+#: ss-hydro characteristics.
+MONTHLY_DA_ONLY_REGION = "GC1451"
+
+
+def monthly_flows(drainage_area_sq_mi: float, *, region: str = "OH", session=None,
+                  regression_region: str = MONTHLY_DA_ONLY_REGION) -> dict:
+    """Mean monthly flows (cfs) by month code (``QJan`` ..) from the NSS
+    drainage-area-only Ohio equations - what ODOT's Temporary Access Fill
+    analysis starts from (the largest, times two, is the Standard Temporary
+    Discharge).  Raises :class:`StreamStatsError` when NSS has nothing."""
+    scenarios = _call("GET", NSS_SCENARIOS, session=session,
+                      params={"regions": region, "statisticgroups": MONTHLY_FLOW_GROUP,
+                              "regressionregions": regression_region})
+    scenario = next((s for s in scenarios or [] if s.get("regressionRegions")), None)
+    if scenario is None:
+        raise StreamStatsError("no monthly-flow scenario for the drainage-area-only region")
+    chars = [{"code": "DRNAREA", "value": float(drainage_area_sq_mi)}]
+    estimate = _call("POST", NSS_ESTIMATE, session=session, params={"regions": region},
+                     json=[fill_scenario(scenario, chars)])
+    regions = (estimate or [{}])[0].get("regressionRegions", [])
+    out = {}
+    for reg in regions:
+        for res in reg.get("results", []):
+            v = res.get("value")
+            if v is not None and float(v) > 0:
+                out[res.get("code")] = float(v)
+    if not out:
+        raise StreamStatsError("NSS returned no monthly flows")
+    return out
+
+
+def max_mean_monthly(flows: dict) -> tuple:
+    """(month code, cfs) of the largest mean monthly flow."""
+    k = max(flows, key=flows.get)
+    return k, flows[k]

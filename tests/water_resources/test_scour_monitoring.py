@@ -444,3 +444,24 @@ def test_result_carries_on_record_and_appraisal_pending_is_not_on_record(ari):
     critical = sc.screen(sc.ScreeningInput(ari, bap03="D", bc11="7"))
     assert pending.on_record == [] and critical.on_record == ["B.AP.03 D"]
     assert critical.as_dict()["on_record"] == critical.on_record
+
+
+# ── monthly flows (TAF) ───────────────────────────────────────────────────
+
+def test_monthly_flows_use_the_drainage_area_only_region():
+    routes = {    # FakeSession matches by substring in order: the estimate route must come first
+        "scenarios/estimate": [{"regressionRegions": [{"code": ss.MONTHLY_DA_ONLY_REGION, "results": [
+            {"code": f"Q{m}", "value": v} for m, v in enumerate((27.3, 33.4, 38.9, 34.3, 21.7, 13.8, 8.21, 5.54, 4.16, 4.35, 10.3, 20.5), 1)]}]}],
+        "nssservices/scenarios": [{"statisticGroupID": 7, "regressionRegions": [
+            {"code": ss.MONTHLY_DA_ONLY_REGION, "parameters": [{"code": "DRNAREA"}]}]}],
+    }
+    s = FakeSession(routes)
+    f = ss.monthly_flows(18.8, session=s)
+    assert f["Q3"] == 38.9 and len(f) == 12 and ss.max_mean_monthly(f) == ("Q3", 38.9)
+    assert any("statisticgroups" in u or "scenarios" in u for _, u in s.calls)
+
+
+def test_monthly_flows_raise_without_results():
+    s = FakeSession({"scenarios/estimate": [], "nssservices/scenarios": []})
+    with pytest.raises(ss.StreamStatsError):
+        ss.monthly_flows(5.0, session=s)
