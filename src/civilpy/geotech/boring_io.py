@@ -403,15 +403,19 @@ def _parse_layer(el, system: str | None) -> Layer | None:
 # --------------------------------------------------------------- PDF (fallback)
 
 
-def read_pdf_log(path) -> Borehole:  # pragma: no cover - placeholder
-    """Best-effort reader for a rendered PDF boring log.
+def read_pdf_log(path, **kw) -> list[Borehole]:
+    """Boreholes from a rendered PDF boring log.
 
-    Most published logs are raster/scanned PDFs with no text layer, which
-    require OCR and template-specific table recovery; that lower-fidelity
-    path is not yet implemented.  Prefer :func:`parse_diggs` whenever a
-    DIGGS file is available for the hole.
+    Vector PDFs printed from ODOT's standard gINT sheet are read by
+    :mod:`civilpy.state.ohio.DOT.boring_log_pdf` (header, layers, samples,
+    SPT, lab columns).  Scanned logs have no text layer and are not read -
+    they need OCR first.  Prefer :func:`parse_diggs` whenever a DIGGS file
+    exists for the hole; :mod:`civilpy.geotech.diggs_writer` turns a read log
+    into one.
     """
-    raise NotImplementedError(
-        "PDF boring-log parsing is not implemented yet; use parse_diggs() "
-        "with the hole's DIGGS export when available."
-    )
+    from civilpy.state.ohio.DOT.boring_log_pdf import read_boreholes
+
+    holes = read_boreholes(path, **kw)
+    if not holes:
+        raise ValueError(f"{path}: no ODOT log sheets with a text layer (a scanned log needs OCR first)")
+    return holes

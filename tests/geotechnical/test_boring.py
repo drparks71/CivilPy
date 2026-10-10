@@ -230,8 +230,9 @@ class TestScalarModel:
         assert s.recovery_percent == pytest.approx(50.0)
 
 
-def test_pdf_log_not_implemented(tmp_path):
+def test_pdf_log_rejects_a_file_without_log_sheets(tmp_path):
+    pytest.importorskip("fitz")
     f = tmp_path / "log.pdf"
     f.write_bytes(b"%PDF-1.4")
-    with pytest.raises(NotImplementedError):
+    with pytest.raises(Exception):          # not a readable PDF / no ODOT sheets
         read_pdf_log(f)

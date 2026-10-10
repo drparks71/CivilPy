@@ -36,6 +36,22 @@ class BoringBatchInput:
     })
 
 
+@dataclass(frozen=True)
+class BoringPdfInput:
+    """Inputs for ``boring pdf2diggs``."""
+
+    path: str = field(metadata={
+        "positional": True, "kind": "path", "exts": (".pdf",),
+        "doc": "PDF of ODOT standard boring log sheets (a report or a bare log; vector, not scanned)",
+    })
+    xml: str = field(default="", metadata={
+        "kind": "path", "exts": (".xml",),
+        "doc": "DIGGS file to write (default: next to the PDF as <name>-DIGGS.xml)",
+    })
+    project: str = field(default="", metadata={"doc": "project name for the DIGGS Project (default: the sheet's PROJECT)"})
+    pid: str = field(default="", metadata={"doc": "ODOT PID for the DIGGS Project identifier (default: the sheet's PID)"})
+
+
 def _tables_for(holes) -> list:  # noqa: ANN001
     header_rows = []
     spt_rows = []
@@ -151,7 +167,42 @@ def run_batch(inp: BoringBatchInput, ctx) -> CommandResult:  # noqa: ANN001
     return CommandResult(tables=tables, input_files=[str(f) for f in files])
 
 
+def run_pdf2diggs(inp: BoringPdfInput, ctx) -> CommandResult:  # noqa: ANN001
+    from civilpy.geotech.diggs_writer import write_diggs
+    from civilpy.state.ohio.DOT.boring_log_pdf import read_log_pdf
+
+    path = Path(inp.path).expanduser()
+    if not path.exists():
+        raise CliError(f"no such file: {path}")
+    logs = read_log_pdf(path)
+    if not logs:
+        raise CliError(f"{path.name}: no ODOT log sheets with a text layer (a scanned log needs OCR first)")
+    head = logs[0].header
+    out = Path(inp.xml).expanduser() if inp.xml else path.with_name(path.stem + "-DIGGS.xml")
+    write_diggs(logs, out, project=inp.project or head.project, pid=inp.pid or head.pid, source=path.name)
+    holes = [log.to_borehole() for log in logs]
+    tables = _tables_for(holes)
+    tables[0].notes.append(f"wrote {out}")
+    for log in logs:
+        for w in log.warnings:
+            tables[0].notes.append(f"{log.boring_id}: {w}")
+    tables[0].notes.append("read from the printed log, not human-verified: check against the sheet before design use")
+    return CommandResult(tables=tables, input_files=[str(path)])
+
+
 SPECS = [
+    CommandSpec(
+        name="boring pdf2diggs",
+        summary="Read ODOT standard boring log sheets from a PDF and write them as a DIGGS file",
+        description=(
+            "Reads the vector PDF of ODOT's standard gINT boring log (header, layers, "
+            "samples, SPT blows, lab columns) and writes a DIGGS 2.5 document that the "
+            "rest of the library reads like a published one. Values are taken as printed "
+            "and should be checked against the sheet; scanned logs need OCR first."
+        ),
+        input_model=BoringPdfInput,
+        runner="civilpy.cli.commands.boring:run_pdf2diggs",
+    ),
     CommandSpec(
         name="boring parse",
         summary="Read a DIGGS XML boring log into summary/SPT/gradation tables",
