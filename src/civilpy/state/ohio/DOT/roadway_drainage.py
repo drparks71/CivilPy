@@ -16,7 +16,10 @@ Ditches (1102.3)
     in a trapezoidal / V ditch (:func:`normal_depth`), shear ``62.4 D S``
     against Table 1102-1 and the permanent linings (:func:`shear_stress`,
     :func:`select_lining`), the 1 ft-below-pavement depth limit and lining
-    widths (:func:`ditch_check`), the CB-2-2-A window weir, depressed median
+    widths (:func:`ditch_check`), a ditch run reach by reach with CDSS's
+    time-of-flow rule (:func:`analyze_ditch`; CDSS's lining / 0.040 n pair
+    by default, one n for both storms as an option), the CB-2-2-A window
+    weir, depressed median
     catch basin spacing (1102.3.6).
 
 Pavement (1103)
@@ -195,21 +198,40 @@ def select_lining(shear_lb_sqft: float, *, slope: float, outside_clear_zone: boo
             "rejected": rejected, "basis": "1102.3.2 F"}
 
 
+N_METHODS = ("single", "cdss")
+CDSS_DEPTH_N = 0.040                 # ODOT CDSS: the depth storm's n (velocity / shear storm: the lining's n)
+
+
+def ditch_n(lining: str = "seeded", *, n_method: str = "cdss", depth_n: float = CDSS_DEPTH_N) -> dict:
+    """Manning's n for the two ditch storms.  ``cdss`` (default; how ODOT
+    CDSS works - the 0.040 is built into the program, not an input): the
+    lining n for the velocity / shear storm, ``depth_n`` (0.040, or the
+    lining n if higher) for the depth storm - stability checked smooth,
+    capacity checked rough.  ``single``: the Table 1102-2 lining n for both."""
+    if n_method not in N_METHODS:
+        raise ValueError(f"n_method must be one of {N_METHODS}")
+    n = LINING_N[lining]
+    return {"shear": n, "depth": max(n, depth_n) if n_method == "cdss" else n}
+
+
 def ditch_check(q_depth_cfs: float, q_shear_cfs: float, section: Trapezoid, slope: float, *, lining: str = "seeded",
                 pavement_edge_above_flowline_ft: float | None = None, bank_height_ft: float | None = None,
-                **lining_kw) -> dict:
+                n_method: str = "cdss", depth_n: float = CDSS_DEPTH_N, **lining_kw) -> dict:
     """1102.3.1 / 1102.3.2 at one ditch checkpoint: normal depth at the depth
     storm against 1 ft below the pavement edge (and the bank in toe-of-slope
     ditches), shear at the shear storm against the lining, the lining that
-    would pass and its width.  ``lining`` names a Table 1102-2 entry for n."""
-    n = LINING_N[lining]
-    y = normal_depth(q_depth_cfs, section, n, slope)
+    would pass and its width.  ``lining`` names a Table 1102-2 entry for n;
+    ``n_method`` picks CDSS's pair (default) or one n for both storms
+    (:func:`ditch_n`)."""
+    ns = ditch_n(lining, n_method=n_method, depth_n=depth_n)
+    n = ns["shear"]
+    y = normal_depth(q_depth_cfs, section, ns["depth"], slope)
     y_s = normal_depth(q_shear_cfs, section, n, slope)
     tau = shear_stress(y_s, slope)
     v = q_depth_cfs / section.area(y) if y > 0 else 0.0
     out = {"depth_ft": round(y, 3), "velocity_fps": round(v, 2), "top_width_ft": round(section.top_width(y), 2),
-           "shear_depth_ft": round(y_s, 3), "shear_lb_sqft": round(tau, 3), "n": n, "basis": "1102.3.1 / 1102.3.2",
-           "flags": []}
+           "shear_depth_ft": round(y_s, 3), "shear_lb_sqft": round(tau, 3), "n": n, "depth_n": ns["depth"],
+           "n_method": n_method, "basis": "1102.3.1 / 1102.3.2", "flags": []}
     if pavement_edge_above_flowline_ft is not None:
         limit = pavement_edge_above_flowline_ft - DITCH_FREEBOARD_BELOW_PAVEMENT_FT
         out["depth_limit_ft"] = round(limit, 3)
@@ -226,6 +248,54 @@ def ditch_check(q_depth_cfs: float, q_shear_cfs: float, section: Trapezoid, slop
         out["flags"].append(f"shear {tau:.2f} lb/sq ft exceeds seed ({seed}) - {pick['lining']}"
                             + (f", {out['lining_width_ft']:.1f} ft wide" if pick["allowable_lb_sqft"] else ""))
     return out
+
+
+def analyze_ditch(reaches: list, *, zone: str, depth_aep_pct: float, shear_aep_pct: float, lining: str = "seeded",
+                  n_method: str = "cdss", depth_n: float = CDSS_DEPTH_N,
+                  default_tc_min: float = idf.MIN_TC_DITCH_MIN) -> dict:
+    """A ditch run reach by reach, top down, as ODOT CDSS's Ditch Analysis.
+
+    ``reaches`` each ``{name?, length_ft, bottom_ft, z_left, z_right, slope,
+    c, area_acres, tc_min?, lining?, pavement_edge_above_flowline_ft?,
+    bank_height_ft?}``.  CA accumulates down the run.  Each storm (shear /
+    velocity and depth) is carried down on its own: a reach starts at the
+    later of its own ``tc_min`` (``default_tc_min`` when absent or zero) and
+    that storm's arrival from the reach above; travel = L / (60 V0) with V0
+    the velocity at the flow from the intensity at the start time (CDSS does
+    not iterate it to the arrival time); i, Q, depth, velocity, shear and top
+    width are then at the arrival time.  Every reach is checked with
+    :func:`ditch_check` at the two arrival flows.  ``n_method`` as in
+    :func:`ditch_n`."""
+    out, ca = [], 0.0
+    arrival = {"shear": None, "depth": None}
+    aeps = {"shear": shear_aep_pct, "depth": depth_aep_pct}
+    for r in reaches:
+        ca += r["c"] * r["area_acres"]
+        sec = Trapezoid(r["bottom_ft"], r["z_left"], r["z_right"])
+        rl = r.get("lining", lining)
+        ns = ditch_n(rl, n_method=n_method, depth_n=depth_n)
+        own_tc = r.get("tc_min") or default_tc_min
+        storms = {}
+        for key in ("shear", "depth"):
+            n, aep = ns[key], aeps[key]
+            start = max(own_tc, arrival[key] or 0.0)
+            q0 = ca * idf.intensity(start, aep, zone)
+            y0 = normal_depth(q0, sec, n, r["slope"])
+            v0 = q0 / sec.area(y0) if y0 > 0 else 0.0
+            t = start + (idf.travel_minutes(r["length_ft"], v0) if v0 > 0 else 0.0)
+            i = idf.intensity(t, aep, zone)
+            q = ca * i
+            y = normal_depth(q, sec, n, r["slope"])
+            storms[key] = {"aep_pct": aep, "n": n, "start_min": round(start, 2), "time_min": round(t, 2),
+                           "intensity_in_hr": round(i, 3), "q_cfs": round(q, 3), "depth_ft": round(y, 3),
+                           "velocity_fps": round(q / sec.area(y), 2) if y > 0 else 0.0,
+                           "shear_lb_sqft": round(shear_stress(y, r["slope"]), 3), "top_width_ft": round(sec.top_width(y), 2)}
+            arrival[key] = t
+        chk = ditch_check(storms["depth"]["q_cfs"], storms["shear"]["q_cfs"], sec, r["slope"], lining=rl,
+                          pavement_edge_above_flowline_ft=r.get("pavement_edge_above_flowline_ft"),
+                          bank_height_ft=r.get("bank_height_ft"), n_method=n_method, depth_n=depth_n)
+        out.append({"name": r.get("name"), "ca_acres": round(ca, 4), "storms": storms, "check": chk})
+    return {"zone": zone, "n_method": n_method, "reaches": out, "basis": "1102.3", "edition": "July 2026"}
 
 
 def cb_window_capacity(length_ft: float, head_ft: float, *, c: float = 3.0) -> float:

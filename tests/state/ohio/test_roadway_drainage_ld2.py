@@ -412,3 +412,61 @@ def test_network_errors():
         rd.design_storm_sewer(t + [dict(t[2], name="C2")], zone="B")
     with pytest.raises(ValueError):
         rd.design_storm_sewer(t, zone="B", hgl_method="nope")
+
+
+@pytest.mark.parametrize("lining", ["seeded", "sod", "concrete", "rock channel protection (ditch)"])
+def test_ditch_n_methods(lining):
+    single = rd.ditch_n(lining, n_method="single")
+    cdss = rd.ditch_n(lining)                        # the default
+    n = rd.LINING_N[lining]
+    assert single == {"shear": n, "depth": n}
+    assert cdss == {"shear": n, "depth": max(n, rd.CDSS_DEPTH_N)}
+    with pytest.raises(ValueError):
+        rd.ditch_n(lining, n_method="two")
+
+
+def _ditch_run(slopes):
+    return [{"name": f"R{k}", "length_ft": 150.0 + 60 * k, "bottom_ft": 2.0, "z_left": 4.0, "z_right": 4.0, "slope": s,
+             "c": 0.5, "area_acres": 0.4 + 0.3 * k, "tc_min": 15.0 if k % 2 == 0 else 0.0} for k, s in enumerate(slopes)]
+
+
+@pytest.mark.parametrize("zone", ["A", "B", "C", "D"])
+@pytest.mark.parametrize("slopes", [(0.005,), (0.02, 0.001, 0.008), (0.003, 0.003, 0.003, 0.012)])
+@pytest.mark.parametrize("n_method", rd.N_METHODS)
+def test_analyze_ditch_time_rule_and_accumulation(zone, slopes, n_method):
+    reaches = _ditch_run(slopes)
+    d = rd.analyze_ditch(reaches, zone=zone, depth_aep_pct=20.0, shear_aep_pct=50.0, n_method=n_method)
+    ca, prev = 0.0, {"shear": None, "depth": None}
+    for r, out in zip(reaches, d["reaches"]):
+        ca += r["c"] * r["area_acres"]
+        assert out["ca_acres"] == pytest.approx(ca, abs=1e-3)
+        sec = rd.Trapezoid(r["bottom_ft"], r["z_left"], r["z_right"])
+        for key, st in out["storms"].items():
+            own = r["tc_min"] or idf.MIN_TC_DITCH_MIN
+            start = max(own, prev[key] or 0.0)
+            assert st["start_min"] == pytest.approx(start, abs=0.01)
+            # travel at the velocity of the START-time flow
+            q0 = ca * idf.intensity(start, st["aep_pct"], zone)
+            v0 = q0 / sec.area(rd.normal_depth(q0, sec, st["n"], r["slope"]))
+            assert st["time_min"] == pytest.approx(start + r["length_ft"] / 60.0 / v0, abs=0.01)
+            assert st["time_min"] > st["start_min"]
+            # arrival-time values are consistent with one another
+            assert st["intensity_in_hr"] == pytest.approx(idf.intensity(st["time_min"], st["aep_pct"], zone), abs=2e-3)
+            assert st["q_cfs"] == pytest.approx(ca * st["intensity_in_hr"], rel=2e-3)
+            y = rd.normal_depth(st["q_cfs"], sec, st["n"], r["slope"])
+            assert st["depth_ft"] == pytest.approx(y, abs=2e-3)
+            assert st["shear_lb_sqft"] == pytest.approx(rd.shear_stress(y, r["slope"]), abs=2e-3)
+            assert st["top_width_ft"] == pytest.approx(sec.top_width(y), abs=0.01)
+            prev[key] = st["time_min"]
+        assert out["storms"]["depth"]["n"] == (0.04 if n_method == "cdss" else 0.03)
+        assert out["check"]["depth_n"] == out["storms"]["depth"]["n"]
+
+
+def test_cdss_n_raises_depth_not_shear():
+    reaches = _ditch_run((0.004, 0.01))
+    one = rd.analyze_ditch(reaches, zone="B", depth_aep_pct=20.0, shear_aep_pct=50.0, n_method="single")
+    two = rd.analyze_ditch(reaches, zone="B", depth_aep_pct=20.0, shear_aep_pct=50.0)    # cdss, the default
+    for a, b in zip(one["reaches"], two["reaches"]):
+        assert a["storms"]["shear"] == b["storms"]["shear"]
+        assert b["storms"]["depth"]["depth_ft"] > a["storms"]["depth"]["depth_ft"]
+        assert b["check"]["depth_ft"] > a["check"]["depth_ft"] and b["check"]["shear_lb_sqft"] == a["check"]["shear_lb_sqft"]
