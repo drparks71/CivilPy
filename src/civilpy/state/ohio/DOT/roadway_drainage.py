@@ -32,10 +32,12 @@ Storm sewers (1104)
     just-full (0.938 D) sizing at 10 % AEP working downstream with the
     rational method (:func:`design_storm_sewer`), n 0.015 / 0.013, minimum
     12 / 15 in, 3 fps cleansing and 10 fps / 4:1 limits, cover and access
-    spacing, and the 4 % AEP hydraulic grade line worked upstream from the
-    outlet starting at the higher of tailwater and ``(dc + D) / 2``
-    (:func:`hydraulic_grade_line`), checked against 12 in below the
-    pavement edge (ditch sections) or the grate elevation (curbed).
+    spacing, single chains or branched systems, and the 4 % AEP hydraulic
+    grade line worked upstream from the outlet starting at the higher of
+    tailwater and ``(dc + D) / 2`` (:func:`hydraulic_grade_line`), with
+    ODOT CDSS's junction and intensity rules by default, checked against
+    12 in below the pavement edge (ditch sections) or the grate elevation
+    (curbed).
 
 Standard-drawing dimensions (grate lengths, window lengths, open areas of
 CB-3 / CB-6 / I-2 ...) are inputs here - take them from the Hydraulic SCDs.
@@ -728,51 +730,161 @@ def outlet_start_elevation(*, tailwater_ft: float | None, invert_ft: float, d_in
             "controls": "tailwater" if tailwater_ft is not None and tailwater_ft > half else "(dc + D) / 2", "basis": "1104.3.2, 1105.6.1"}
 
 
-def hydraulic_grade_line(runs: list, *, start_ft: float) -> list:
-    """1104.3.2 HGL from the outlet upstream.  ``runs`` are ordered from the
-    outlet run upward, each ``{q_cfs, d_in, length_ft, invert_down_ft,
-    invert_up_ft, n?, limit_ft?}``.  Full runs rise along the friction slope;
-    a run whose slope is steeper than its friction slope drains down to
-    normal depth, and the HGL follows the water surface there until a flatter
-    run fills again.  Each row carries the HGL at its upper end and whether
-    it stays under the run's limit."""
+HGL_METHODS = ("cdss", "single_intensity")
+
+
+def mean_velocity(q_cfs: float, d_in: float, slope: float, n: float | None = None) -> float:
+    """Mean velocity at the design flow: the normal-depth velocity while the
+    pipe runs part full, Q / A full once Q is over the just-full capacity
+    (what ODOT CDSS prints and uses for pipe travel time)."""
+    if q_cfs <= 0:
+        return 0.0
+    yn = normal_depth_circular(q_cfs, d_in, slope, n) if slope > 0 else None
+    if yn is None:
+        return q_cfs / (math.pi * (d_in / 24.0) ** 2)
+    return q_cfs / circle_section(d_in / 12.0, yn)["area"]
+
+
+def junction_hgl(*, downstream_hgl_ft: float, invert_down_ft: float, d_in: float, q_cfs: float, slope: float,
+                 n: float | None = None, method: str = "cdss") -> dict:
+    """HGL at the downstream end of a run, where it leaves a junction whose HGL is ``downstream_hgl_ft``.
+
+    ``cdss`` (ODOT CDSS, as its printouts show): the higher of the junction
+    HGL and the run's flow line + (dc + D) / 2 - raised ("repositioned")
+    when that stands above the junction's.  Normal depth never repositions
+    it (a run whose yn stood 0.01-0.04 ft above the junction HGL kept the
+    junction's in CDSS); yn governs inside the run, where a steep run drains
+    down to it.
+    ``single_intensity``: flow line + yn, or + D when the run is over its
+    just-full capacity."""
+    d = d_in / 12.0
+    yn = normal_depth_circular(q_cfs, d_in, slope, n) if slope > 0 else None
+    if method == "cdss":
+        own = invert_down_ft + 0.5 * (critical_depth_circular(q_cfs, d_in) + d)
+    else:
+        own = invert_down_ft + (yn if yn is not None else d)
+    return {"hgl_ft": max(downstream_hgl_ft, own), "own_ft": own, "repositioned": own > downstream_hgl_ft + 1e-9,
+            "normal_depth_ft": yn}
+
+
+def _hgl_run(r: dict, start_ft: float, method: str) -> dict:
+    """One run of the HGL from the HGL at its downstream junction."""
+    d_in, q, length = r["d_in"], r["q_cfs"], r["length_ft"]
+    d = d_in / 12.0
+    n = r.get("n") or sewer_n(d_in)
+    slope = (r["invert_up_ft"] - r["invert_down_ft"]) / length if length else 0.0
+    sf = friction_slope(q, d_in, n)
+    j = junction_hgl(downstream_hgl_ft=start_ft, invert_down_ft=r["invert_down_ft"], d_in=d_in, q_cfs=q, slope=slope, n=n,
+                     method=method)
+    yn, hgl_down = j["normal_depth_ft"], j["hgl_ft"]
+    hgl_up = hgl_down + sf * length                      # full: along the friction slope
+    if yn is not None:
+        hgl_up = max(hgl_up, r["invert_up_ft"] + yn)    # a steep run drains to normal depth
+    elif method == "cdss":
+        hgl_up = max(hgl_up, r["invert_up_ft"] + d)     # over capacity: flowing full, at least the crown
+    regime = "pressure" if hgl_up > r["invert_up_ft"] + d else "open channel"
+    limit = r.get("limit_ft")
+    return {**{k: r[k] for k in ("q_cfs", "d_in", "length_ft", "invert_down_ft", "invert_up_ft")}, "n": n,
+            "slope": round(slope, 5), "friction_slope": round(sf, 5), "normal_depth_ft": round(yn, 3) if yn is not None else None,
+            "hgl_down_ft": round(hgl_down, 3), "hgl_up_ft": round(hgl_up, 3), "repositioned": j["repositioned"],
+            "regime": regime, "limit_ft": limit, "ok": (hgl_up <= limit) if limit is not None else None, "name": r.get("name")}
+
+
+def hydraulic_grade_line(runs: list, *, start_ft: float, method: str = "cdss") -> list:
+    """1104.3.2 HGL from the outlet upstream along one chain.  ``runs`` are
+    ordered from the outlet run upward, each ``{q_cfs, d_in, length_ft,
+    invert_down_ft, invert_up_ft, n?, limit_ft?}``.  At each run's downstream
+    end the HGL is raised to the run's own water surface where that stands
+    higher (:func:`junction_hgl`); full runs rise along the friction slope;
+    a run steeper than its friction slope drains down to normal depth.  Each
+    row carries the HGL at both ends and whether the upper end stays under
+    the run's limit.  Branched systems: :func:`design_storm_sewer`."""
+    if method not in HGL_METHODS:
+        raise ValueError(f"method must be one of {HGL_METHODS}")
     out, hgl = [], start_ft
     for r in runs:
-        d_in, q, length = r["d_in"], r["q_cfs"], r["length_ft"]
-        d = d_in / 12.0
-        n = r.get("n") or sewer_n(d_in)
-        slope = (r["invert_up_ft"] - r["invert_down_ft"]) / length if length else 0.0
-        sf = friction_slope(q, d_in, n)
-        yn = normal_depth_circular(q, d_in, slope, n) if slope > 0 else None
-        hgl_down = max(hgl, r["invert_down_ft"] + (yn if yn is not None else d))
-        hgl_up = hgl_down + sf * length                      # full: along the friction slope
-        if yn is not None:
-            hgl_up = max(hgl_up, r["invert_up_ft"] + yn)    # a steep run drains to normal depth
-        regime = "pressure" if hgl_up > r["invert_up_ft"] + d else "open channel"
-        limit = r.get("limit_ft")
-        out.append({**{k: r[k] for k in ("q_cfs", "d_in", "length_ft", "invert_down_ft", "invert_up_ft")}, "n": n,
-                    "slope": round(slope, 5), "friction_slope": round(sf, 5), "normal_depth_ft": round(yn, 3) if yn is not None else None,
-                    "hgl_down_ft": round(hgl_down, 3), "hgl_up_ft": round(hgl_up, 3), "regime": regime, "limit_ft": limit,
-                    "ok": (hgl_up <= limit) if limit is not None else None, "name": r.get("name")})
-        hgl = hgl_up
+        row = _hgl_run(r, hgl, method)
+        out.append(row)
+        hgl = row["hgl_up_ft"]
     return out
 
 
+def _network(runs: list) -> tuple:
+    """(from, to) junction ids per run - given as ``from_junction`` /
+    ``to_junction``, else a single chain in list order - the runs in
+    upstream-first order, and the outlet run."""
+    if any("from_junction" in r or "to_junction" in r for r in runs):
+        ends = [(str(r["from_junction"]), str(r["to_junction"])) for r in runs]
+    else:
+        ends = [(f"J{k}", f"J{k + 1}") for k in range(len(runs))]
+    starts = {}
+    for k, (a, _) in enumerate(ends):
+        if a in starts and a not in ("0", ""):
+            raise ValueError(f"two runs leave junction {a!r}; a junction has one outgoing run")
+        starts.setdefault(a, k)
+    incoming = {k: [m for m, (_, b) in enumerate(ends) if b == a and m != k] for k, (a, _) in enumerate(ends)}
+    for k, (a, _) in enumerate(ends):
+        if a in ("0", ""):                       # CDSS: junction "0" = a structure with no pipe coming in
+            incoming[k] = []
+    outlets = [k for k, (_, b) in enumerate(ends) if b not in starts or b in ("0", "")]
+    if len(outlets) != 1:
+        raise ValueError(f"a storm sewer system needs exactly one outlet run, found {len(outlets)}")
+    order, done = [], set()
+
+    def visit(k, path=()):
+        if k in done:
+            return
+        if k in path:
+            raise ValueError("the runs form a loop")
+        for m in incoming[k]:
+            visit(m, path + (k,))
+        done.add(k)
+        order.append(k)
+
+    for k in range(len(runs)):
+        visit(k)
+    return ends, incoming, order, outlets[0]
+
+
 def design_storm_sewer(runs: list, *, zone: str, freeway: bool = False, design_aep_pct: float = SEWER_DESIGN_AEP,
-                       check_aep_pct: float = SEWER_HGL_AEP, tailwater_ft: float | None = None, first_inlet: str = "pavement") -> dict:
-    """1104.4 procedure.  ``runs`` run from the top structure downstream to
-    the outlet, each ``{name, c, area_acres, tc_local_min, length_ft,
-    invert_up_ft, invert_down_ft, d_in?, limit_ft?}``: the local CA is added
-    to the upstream total, tc is the larger of the local tc and the upstream
-    tc plus pipe travel, i from Figure 1101-2 at the design storm, Q = CA i,
-    the just-full size (or the given existing size checked), velocity flags
-    and a crown-match drop for a smaller upstream pipe (1104.2.1 H).  Then
-    the 4 % HGL with the last run's intensity for every run (1104.3.2)."""
-    rows, ca, tc_prev, d_prev = [], 0.0, None, None
-    for r in runs:
-        ca += r["c"] * r["area_acres"]
-        tc_local = idf.time_of_concentration(overland_min=r.get("tc_local_min", 0.0), first_inlet=first_inlet if tc_prev is None else None)
-        tc = max(tc_local, tc_prev) if tc_prev is not None else tc_local
+                       check_aep_pct: float = SEWER_HGL_AEP, tailwater_ft: float | None = None, first_inlet: str = "pavement",
+                       hgl_method: str = "cdss") -> dict:
+    """1104.4 procedure for a single chain or a branched system.
+
+    ``runs`` each ``{name, c, area_acres, tc_local_min, length_ft,
+    invert_up_ft, invert_down_ft, d_in?, limit_ft?, from_junction?,
+    to_junction?}``.  Without junction ids the runs are one chain from the
+    top structure down to the outlet; with them, any tree with one outlet run
+    (junction "0" is a structure with no pipe coming in, as in CDSS).  Working
+    downstream: the CA of every run reaching a junction is added to the local
+    CA; tc is the larger of the local tc and each incoming run's tc plus its
+    travel time; i from Figure 1101-2 at the design storm; Q = CA i; the
+    just-full size (or a given ``d_in`` held and checked); velocity flags and
+    a crown-match drop for a smaller incoming pipe (1104.2.1 H).
+
+    Then the 4 % AEP HGL from the outlet upward.  ``hgl_method``:
+
+    ``cdss`` (default; ODOT CDSS, checked against its printouts): pipe travel
+      at the mean velocity at the design flow (:func:`mean_velocity`); the
+      check intensity at the time the water reaches the outlet, held upstream
+      and re-taken at a run's own arrival time wherever the HGL is
+      repositioned at its downstream junction; junction HGL from
+      :func:`junction_hgl` with ``(dc + D) / 2``.  Checked run by run
+      against CDSS 1.0.0.3 printouts of branched systems.
+    ``single_intensity``: travel at the just-full velocity, the outlet run's
+      intensity at its own tc on every run, junction HGL at normal depth or
+      the crown."""
+    if hgl_method not in HGL_METHODS:
+        raise ValueError(f"hgl_method must be one of {HGL_METHODS}")
+    ends, incoming, order, outlet = _network(runs)
+    rows = [None] * len(runs)
+    arrive = {}                                   # run -> time the flow reaches its downstream end
+    for k in order:
+        r = runs[k]
+        ups = [rows[m] for m in incoming[k]]
+        ca = r["c"] * r["area_acres"] + sum(u["ca_acres_raw"] for u in ups)
+        tc_local = idf.time_of_concentration(overland_min=r.get("tc_local_min", 0.0), first_inlet=None if ups else first_inlet)
+        tc = max([tc_local] + [arrive[m] for m in incoming[k]])
         i = idf.intensity(tc, design_aep_pct, zone)
         q = ca * i
         length = r["length_ft"]
@@ -785,34 +897,55 @@ def design_storm_sewer(runs: list, *, zone: str, freeway: bool = False, design_a
                 pipe["flags"].append(f"existing {r['d_in']} in carries {jf['q_cfs']:.1f} cfs just full, under {q:.1f} cfs")
         else:
             pipe = size_pipe(q, slope, freeway=freeway)
-        v = pipe["velocity_fps"] or 0.0
+        v_mean = mean_velocity(q, pipe["d_in"], slope, pipe["n"]) if pipe["d_in"] else 0.0
+        v = v_mean if hgl_method == "cdss" else (pipe["velocity_fps"] or 0.0)
         travel = idf.travel_minutes(length, v) if v else 0.0
+        arrive[k] = tc + travel
         flags = list(pipe["flags"])
-        if d_prev is not None and pipe["d_in"] and pipe["d_in"] > d_prev:
-            flags.append(f"match the {d_prev} in upstream crown to this {pipe['d_in']} in crown: drop {(pipe['d_in'] - d_prev) / 12:.2f} ft (1104.2.1 H)")
+        d_up = max([u["d_in"] for u in ups if u["d_in"]], default=None)
+        if d_up is not None and pipe["d_in"] and pipe["d_in"] > d_up:
+            flags.append(f"match the {d_up} in upstream crown to this {pipe['d_in']} in crown: drop {(pipe['d_in'] - d_up) / 12:.2f} ft (1104.2.1 H)")
         if pipe["d_in"] and length > access_spacing_ft(pipe["d_in"])[1]:
             flags.append(f"run longer than the {access_spacing_ft(pipe['d_in'])[1]} ft access spacing (1104.2.3)")
-        rows.append({"name": r.get("name"), "ca_acres": round(ca, 4), "tc_min": round(tc, 2), "intensity_in_hr": round(i, 3), "q_cfs": round(q, 3),
-                     "slope": round(slope, 5), "length_ft": length, "invert_up_ft": r["invert_up_ft"], "invert_down_ft": r["invert_down_ft"],
-                     "d_in": pipe["d_in"], "n": pipe["n"], "capacity_cfs": pipe["capacity_cfs"], "velocity_fps": pipe["velocity_fps"],
-                     "travel_min": round(travel, 2), "flags": [f for f in flags if f], "limit_ft": r.get("limit_ft")})
-        tc_prev, d_prev = tc + travel, pipe["d_in"] or d_prev
-    # 1104.3.2: the check intensity is the last run's, applied to every run
+        rows[k] = {"name": r.get("name"), "from_junction": ends[k][0], "to_junction": ends[k][1], "ca_acres": round(ca, 4),
+                   "ca_acres_raw": ca, "tc_min": round(tc, 2), "intensity_in_hr": round(i, 3), "q_cfs": round(q, 3),
+                   "slope": round(slope, 5), "length_ft": length, "invert_up_ft": r["invert_up_ft"], "invert_down_ft": r["invert_down_ft"],
+                   "d_in": pipe["d_in"], "n": pipe["n"], "capacity_cfs": pipe["capacity_cfs"], "velocity_fps": pipe["velocity_fps"],
+                   "mean_velocity_fps": round(v_mean, 2), "travel_min": round(travel, 2), "flags": [f for f in flags if f],
+                   "limit_ft": r.get("limit_ft")}
     hgl_rows = []
-    if rows and all(x["d_in"] for x in rows):
-        i_check = idf.intensity(rows[-1]["tc_min"], check_aep_pct, zone)
-        last = rows[-1]
-        q_last = last["ca_acres"] * i_check
-        start = outlet_start_elevation(tailwater_ft=tailwater_ft, invert_ft=last["invert_down_ft"], d_in=last["d_in"], q_cfs=q_last)
-        up = [{"name": x["name"], "q_cfs": x["ca_acres"] * i_check, "d_in": x["d_in"], "length_ft": x["length_ft"],
-               "invert_down_ft": x["invert_down_ft"], "invert_up_ft": x["invert_up_ft"], "n": x["n"], "limit_ft": x["limit_ft"]}
-              for x in reversed(rows)]
-        hgl_rows = hydraulic_grade_line(up, start_ft=start["start_ft"])
-        for h in hgl_rows:
+    if all(x["d_in"] for x in rows):
+        last = rows[outlet]
+        t_check = arrive[outlet] if hgl_method == "cdss" else last["tc_min"]
+        i_check = idf.intensity(t_check, check_aep_pct, zone)
+        start = outlet_start_elevation(tailwater_ft=tailwater_ft, invert_ft=last["invert_down_ft"], d_in=last["d_in"],
+                                       q_cfs=last["ca_acres_raw"] * i_check)
+
+        def run_input(x, i):
+            return {"name": x["name"], "q_cfs": x["ca_acres_raw"] * i, "d_in": x["d_in"], "length_ft": x["length_ft"],
+                    "invert_down_ft": x["invert_down_ft"], "invert_up_ft": x["invert_up_ft"], "n": x["n"], "limit_ft": x["limit_ft"]}
+
+        def walk(k, junction_ft, i):
+            x = rows[k]
+            h = _hgl_run(run_input(x, i), junction_ft, hgl_method)
+            if hgl_method == "cdss" and h["repositioned"] and k != outlet:
+                i = idf.intensity(arrive[k], check_aep_pct, zone)      # re-taken where the HGL is repositioned
+                h = _hgl_run(run_input(x, i), junction_ft, hgl_method)
+                h["repositioned"] = True
             h["q_check_cfs"] = round(h.pop("q_cfs"), 3)
-        check = {"aep_pct": check_aep_pct, "intensity_in_hr": round(i_check, 3), "start": start, "runs": hgl_rows,
-                 "ok": all(h["ok"] is not False for h in hgl_rows), "basis": "1104.3.2"}
+            h["intensity_in_hr"] = round(i, 3)
+            h["from_junction"], h["to_junction"] = x["from_junction"], x["to_junction"]
+            hgl_rows.append(h)
+            for m in incoming[k]:
+                walk(m, h["hgl_up_ft"], i)
+
+        walk(outlet, start["start_ft"], i_check)
+        check = {"aep_pct": check_aep_pct, "method": hgl_method, "intensity_in_hr": round(i_check, 3), "time_min": round(t_check, 2),
+                 "start": start, "runs": hgl_rows, "ok": all(h["ok"] is not False for h in hgl_rows), "basis": "1104.3.2"}
     else:
-        check = {"aep_pct": check_aep_pct, "runs": [], "ok": None, "basis": "1104.3.2", "note": "a run could not be sized"}
-    return {"design_aep_pct": design_aep_pct, "zone": zone, "runs": rows, "hgl": check, "basis": "1104.4",
-            "edition": "July 2026"}
+        check = {"aep_pct": check_aep_pct, "method": hgl_method, "runs": [], "ok": None, "basis": "1104.3.2",
+                 "note": "a run could not be sized"}
+    for x in rows:
+        x.pop("ca_acres_raw")
+    return {"design_aep_pct": design_aep_pct, "zone": zone, "runs": rows, "outlet": rows[outlet]["name"], "hgl": check,
+            "basis": "1104.4", "edition": "July 2026"}

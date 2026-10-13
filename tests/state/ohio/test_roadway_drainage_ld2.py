@@ -274,7 +274,7 @@ def test_design_storm_sewer_procedure():
     runs = [{"name": "CB1-CB2", "c": 0.9, "area_acres": 0.6, "tc_local_min": 6.0, "length_ft": 250.0, "invert_up_ft": 110.0, "invert_down_ft": 108.5, "limit_ft": 113.0},
             {"name": "CB2-MH3", "c": 0.9, "area_acres": 0.8, "tc_local_min": 8.0, "length_ft": 300.0, "invert_up_ft": 108.0, "invert_down_ft": 106.5, "limit_ft": 111.0},
             {"name": "MH3-OUT", "c": 0.5, "area_acres": 1.5, "tc_local_min": 12.0, "length_ft": 200.0, "invert_up_ft": 106.0, "invert_down_ft": 104.5, "limit_ft": 109.0}]
-    d = rd.design_storm_sewer(runs, zone="C", tailwater_ft=105.0)
+    d = rd.design_storm_sewer(runs, zone="C", tailwater_ft=105.0, hgl_method="single_intensity")
     r = d["runs"]
     assert r[0]["tc_min"] == 10.0                                          # 10-minute minimum to the first pavement inlet
     assert r[0]["ca_acres"] == pytest.approx(0.54) and r[1]["ca_acres"] == pytest.approx(1.26) and r[2]["ca_acres"] == pytest.approx(2.01)
@@ -299,3 +299,116 @@ def test_design_storm_sewer_without_a_size_reports_it():
     runs = [{"name": "huge", "c": 0.9, "area_acres": 100.0, "tc_local_min": 10.0, "length_ft": 100.0, "invert_up_ft": 100.01, "invert_down_ft": 100.0}]
     d = rd.design_storm_sewer(runs, zone="D")
     assert d["runs"][0]["d_in"] is None and d["hgl"]["ok"] is None
+
+
+def _tree():
+    """Two branches into a junction, then two runs to the outlet (CDSS-style ids, '0' = no pipe in)."""
+    return [
+        {"name": "A", "from_junction": "0", "to_junction": "1", "c": 0.9, "area_acres": 0.5, "tc_local_min": 10.0,
+         "length_ft": 150.0, "invert_up_ft": 112.0, "invert_down_ft": 110.5},
+        {"name": "B", "from_junction": "0", "to_junction": "1", "c": 0.6, "area_acres": 1.2, "tc_local_min": 14.0,
+         "length_ft": 220.0, "invert_up_ft": 113.0, "invert_down_ft": 110.6},
+        {"name": "C", "from_junction": "1", "to_junction": "2", "c": 0.9, "area_acres": 0.3, "tc_local_min": 0.0,
+         "length_ft": 300.0, "invert_up_ft": 110.0, "invert_down_ft": 109.4},
+        {"name": "D", "from_junction": "2", "to_junction": "OUT", "c": 0.5, "area_acres": 0.4, "tc_local_min": 0.0,
+         "length_ft": 120.0, "invert_up_ft": 109.0, "invert_down_ft": 108.7},
+    ]
+
+
+@pytest.mark.parametrize("zone", ["A", "B", "C", "D"])
+@pytest.mark.parametrize("tailwater", [None, 111.5])
+def test_branched_storm_sewer_accumulates_through_the_network(zone, tailwater):
+    runs = _tree()
+    d = rd.design_storm_sewer(runs, zone=zone, tailwater_ft=tailwater)
+    by = {x["name"]: x for x in d["runs"]}
+    assert d["outlet"] == "D"
+    local = {r["name"]: r["c"] * r["area_acres"] for r in runs}
+    assert by["C"]["ca_acres"] == pytest.approx(local["A"] + local["B"] + local["C"], abs=1e-3)
+    assert by["D"]["ca_acres"] == pytest.approx(sum(local.values()), abs=1e-3)
+    # tc at the confluence: the later of the two arrivals
+    arrive = [by[k]["tc_min"] + by[k]["travel_min"] for k in ("A", "B")]
+    assert by["C"]["tc_min"] == pytest.approx(max(arrive), abs=0.02)
+    assert all(x["tc_min"] >= 10.0 for x in d["runs"])
+    # every run is sized, travel uses the mean velocity at the design flow
+    for x in d["runs"]:
+        assert x["capacity_cfs"] >= x["q_cfs"] - 1e-6
+        v = rd.mean_velocity(x["q_cfs"], x["d_in"], x["slope"], x["n"])
+        assert x["travel_min"] == pytest.approx(x["length_ft"] / 60.0 / v, abs=0.02)
+
+
+@pytest.mark.parametrize("zone", ["A", "C"])
+@pytest.mark.parametrize("tailwater", [None, 109.5, 112.0])
+def test_cdss_hgl_rules_hold_on_every_run(zone, tailwater):
+    d = rd.design_storm_sewer(_tree(), zone=zone, tailwater_ft=tailwater)
+    rows = {x["name"]: x for x in d["runs"]}
+    hgl = {h["name"]: h for h in d["hgl"]["runs"]}
+    assert [h["name"] for h in d["hgl"]["runs"]][0] == "D" and set(hgl) == set(rows)
+    out = rows["D"]
+    assert d["hgl"]["intensity_in_hr"] == pytest.approx(idf.intensity(out["tc_min"] + out["travel_min"], 4, zone), abs=2e-3)
+    junction = {"OUT": d["hgl"]["start"]["start_ft"]}
+    for h in d["hgl"]["runs"]:                       # outlet first, so the downstream junction is known
+        x = rows[h["name"]]
+        down = junction[x["to_junction"]]
+        assert h["hgl_down_ft"] >= down - 1e-3                          # never below the junction
+        q = h["q_check_cfs"]
+        own = x["invert_down_ft"] + 0.5 * (rd.critical_depth_circular(q, x["d_in"]) + x["d_in"] / 12.0)
+        assert h["hgl_down_ft"] == pytest.approx(max(down, own), abs=2e-3)
+        assert q == pytest.approx(x["ca_acres"] * h["intensity_in_hr"], rel=2e-3)
+        if h["repositioned"] and h["name"] != "D":
+            assert h["intensity_in_hr"] == pytest.approx(idf.intensity(x["tc_min"] + x["travel_min"], 4, zone), abs=2e-3)
+        else:
+            parent = next(p for p in d["hgl"]["runs"] if p["from_junction"] == x["to_junction"]) if h["name"] != "D" else None
+            expected = parent["intensity_in_hr"] if parent else d["hgl"]["intensity_in_hr"]
+            assert h["intensity_in_hr"] == pytest.approx(expected, abs=1e-3)
+        assert h["hgl_up_ft"] >= h["hgl_down_ft"] - 1e-3 or h["hgl_up_ft"] >= x["invert_up_ft"]
+        if h["normal_depth_ft"] is None:                                 # over capacity: full, at least the crown
+            assert h["hgl_up_ft"] >= x["invert_up_ft"] + x["d_in"] / 12.0 - 1e-3
+        junction[x["from_junction"]] = h["hgl_up_ft"]
+
+
+@pytest.mark.parametrize("method", rd.HGL_METHODS)
+def test_a_chain_with_junction_ids_matches_the_list_form(method):
+    runs = [{"name": "CB1-CB2", "c": 0.9, "area_acres": 0.6, "tc_local_min": 6.0, "length_ft": 250.0, "invert_up_ft": 110.0, "invert_down_ft": 108.5},
+            {"name": "CB2-MH3", "c": 0.9, "area_acres": 0.8, "tc_local_min": 8.0, "length_ft": 300.0, "invert_up_ft": 108.0, "invert_down_ft": 106.5},
+            {"name": "MH3-OUT", "c": 0.5, "area_acres": 1.5, "tc_local_min": 12.0, "length_ft": 200.0, "invert_up_ft": 106.0, "invert_down_ft": 104.5}]
+    ids = [dict(r, from_junction=a, to_junction=b) for r, (a, b) in zip(runs, [("1", "2"), ("2", "3"), ("3", "4")])]
+    a = rd.design_storm_sewer(runs, zone="B", tailwater_ft=105.0, hgl_method=method)
+    b = rd.design_storm_sewer(list(reversed(ids)), zone="B", tailwater_ft=105.0, hgl_method=method)
+    key = lambda d: sorted((x["name"], x["q_cfs"], x["d_in"], x["tc_min"]) for x in d["runs"])
+    assert key(a) == key(b)
+    assert [(h["name"], h["hgl_up_ft"]) for h in a["hgl"]["runs"]] == [(h["name"], h["hgl_up_ft"]) for h in b["hgl"]["runs"]]
+
+
+def test_cdss_junction_rule_ignores_normal_depth():
+    # part full with yn above (dc + D) / 2: CDSS keeps the junction HGL; the single-intensity rule takes yn
+    q, d_in, slope = 31.0, 42, 0.0015
+    yn = rd.normal_depth_circular(q, d_in, slope)
+    half = 0.5 * (rd.critical_depth_circular(q, d_in) + 3.5)
+    assert yn is not None and yn > half
+    junction = 100.0 + 0.5 * (yn + half)
+    cdss = rd.junction_hgl(downstream_hgl_ft=junction, invert_down_ft=100.0, d_in=d_in, q_cfs=q, slope=slope)
+    simple = rd.junction_hgl(downstream_hgl_ft=junction, invert_down_ft=100.0, d_in=d_in, q_cfs=q, slope=slope, method="single_intensity")
+    assert cdss["hgl_ft"] == junction and not cdss["repositioned"]
+    assert simple["hgl_ft"] == pytest.approx(100.0 + yn) and simple["repositioned"]
+
+
+def test_cdss_junction_rule_uses_half_dc_plus_d_when_over_capacity():
+    # over capacity: no normal depth; CDSS takes (dc + D) / 2, the single-intensity rule the crown
+    q, d_in, slope = 30.0, 24, 0.002
+    assert rd.normal_depth_circular(q, d_in, slope) is None
+    low = rd.junction_hgl(downstream_hgl_ft=0.0, invert_down_ft=100.0, d_in=d_in, q_cfs=q, slope=slope)
+    crown = rd.junction_hgl(downstream_hgl_ft=0.0, invert_down_ft=100.0, d_in=d_in, q_cfs=q, slope=slope, method="single_intensity")
+    assert low["hgl_ft"] == pytest.approx(100.0 + 0.5 * (rd.critical_depth_circular(q, d_in) + 2.0))
+    assert crown["hgl_ft"] == pytest.approx(102.0) and low["repositioned"] and crown["repositioned"]
+    held = rd.junction_hgl(downstream_hgl_ft=105.0, invert_down_ft=100.0, d_in=d_in, q_cfs=q, slope=slope)
+    assert held["hgl_ft"] == 105.0 and not held["repositioned"]
+
+
+def test_network_errors():
+    t = _tree()
+    with pytest.raises(ValueError, match="one outlet"):
+        rd.design_storm_sewer(t + [dict(t[0], name="E", from_junction="9", to_junction="OUT2")], zone="B")
+    with pytest.raises(ValueError, match="one outgoing"):
+        rd.design_storm_sewer(t + [dict(t[2], name="C2")], zone="B")
+    with pytest.raises(ValueError):
+        rd.design_storm_sewer(t, zone="B", hgl_method="nope")
