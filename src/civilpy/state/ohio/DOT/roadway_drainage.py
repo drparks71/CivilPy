@@ -256,8 +256,11 @@ def analyze_ditch(reaches: list, *, zone: str, depth_aep_pct: float, shear_aep_p
     """A ditch run reach by reach, top down, as ODOT CDSS's Ditch Analysis.
 
     ``reaches`` each ``{name?, length_ft, bottom_ft, z_left, z_right, slope,
-    c, area_acres, tc_min?, lining?, pavement_edge_above_flowline_ft?,
-    bank_height_ft?}``.  CA accumulates down the run.  Each storm (shear /
+    c, area_acres, tc_min?, inflows?, lining?, pavement_edge_above_flowline_ft?,
+    bank_height_ft?}``.  CA accumulates down the run.  ``inflows`` are
+    concentrated flows entering at the reach's upstream end (CDSS
+    "Concent" lines), each ``{c, area_acres, tc_min}``: their CA is added
+    and the reach cannot start before their tc.  Each storm (shear /
     velocity and depth) is carried down on its own: a reach starts at the
     later of its own ``tc_min`` (``default_tc_min`` when absent or zero) and
     that storm's arrival from the reach above; travel = L / (60 V0) with V0
@@ -270,11 +273,12 @@ def analyze_ditch(reaches: list, *, zone: str, depth_aep_pct: float, shear_aep_p
     arrival = {"shear": None, "depth": None}
     aeps = {"shear": shear_aep_pct, "depth": depth_aep_pct}
     for r in reaches:
-        ca += r["c"] * r["area_acres"]
+        inflows = r.get("inflows") or []
+        ca += r["c"] * r["area_acres"] + sum(f["c"] * f["area_acres"] for f in inflows)
         sec = Trapezoid(r["bottom_ft"], r["z_left"], r["z_right"])
         rl = r.get("lining", lining)
         ns = ditch_n(rl, n_method=n_method, depth_n=depth_n)
-        own_tc = r.get("tc_min") or default_tc_min
+        own_tc = max([r.get("tc_min") or default_tc_min] + [f.get("tc_min") or 0.0 for f in inflows])
         storms = {}
         for key in ("shear", "depth"):
             n, aep = ns[key], aeps[key]

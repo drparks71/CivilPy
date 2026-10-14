@@ -470,3 +470,18 @@ def test_cdss_n_raises_depth_not_shear():
         assert a["storms"]["shear"] == b["storms"]["shear"]
         assert b["storms"]["depth"]["depth_ft"] > a["storms"]["depth"]["depth_ft"]
         assert b["check"]["depth_ft"] > a["check"]["depth_ft"] and b["check"]["shear_lb_sqft"] == a["check"]["shear_lb_sqft"]
+
+
+@pytest.mark.parametrize("inflow_tc", [5.0, 30.0, 60.0])
+@pytest.mark.parametrize("inflow_ac", [0.5, 20.0])
+def test_analyze_ditch_concentrated_inflow(inflow_tc, inflow_ac):
+    reaches = _ditch_run((0.006, 0.006))
+    plain = rd.analyze_ditch(reaches, zone="B", depth_aep_pct=10.0, shear_aep_pct=20.0)
+    with_in = [reaches[0], dict(reaches[1], inflows=[{"c": 0.45, "area_acres": inflow_ac, "tc_min": inflow_tc}])]
+    d = rd.analyze_ditch(with_in, zone="B", depth_aep_pct=10.0, shear_aep_pct=20.0)
+    a, b = plain["reaches"][1], d["reaches"][1]
+    assert b["ca_acres"] == pytest.approx(a["ca_acres"] + 0.45 * inflow_ac, abs=1e-3)
+    for key in ("shear", "depth"):
+        assert b["storms"][key]["start_min"] == pytest.approx(max(a["storms"][key]["start_min"], inflow_tc), abs=0.01)
+        assert b["storms"][key]["q_cfs"] > a["storms"][key]["q_cfs"] or inflow_tc > a["storms"][key]["start_min"]
+    assert d["reaches"][0] == plain["reaches"][0]                        # the reach above is untouched
