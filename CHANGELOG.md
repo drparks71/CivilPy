@@ -7,6 +7,65 @@ Versions follow [Semantic Versioning](https://semver.org/) (major.minor.patch).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-14
+
+### Changed (defaults - results move)
+
+- **Storm sewers follow ODOT CDSS by default (`state.ohio.DOT.roadway_drainage`).**
+  `design_storm_sewer` / `hydraulic_grade_line` take `hgl_method="cdss"`:
+  pipe travel at the mean velocity at the design flow (`mean_velocity`), the
+  HGL intensity at the outlet arrival time re-taken where the HGL is
+  repositioned, junction HGL = max(junction, flow line + (dc + D) / 2)
+  (`junction_hgl`; normal depth never repositions it), and a run over
+  capacity at least at its crown upstream.  Checked run by run against CDSS
+  1.0.0.3 printouts of branched systems (0.012 ft HGL).
+  `hgl_method="single_intensity"` keeps the 0.4.x behaviour.
+- **Ditches follow CDSS by default.** `ditch_n` / `ditch_check` /
+  `analyze_ditch` take `n_method="cdss"`: the lining n for the velocity /
+  shear storm and 0.040 for the depth storm; `"single"` keeps one Table
+  1102-2 n for both.
+- `bolted_field_splice`: `method="stress_based"` replaces `"odot_bdm"` (kept
+  as a deprecated alias with a `DeprecationWarning`).
+
+### Added
+
+- `design_storm_sewer`: branched systems (`from_junction` / `to_junction`,
+  junction "0" = no pipe in; any tree with one outlet).
+- `analyze_ditch`: a ditch run reach by reach - CA accumulation, each storm
+  carried down on its own, travel at the velocity of the start-time flow,
+  concentrated inflows (`inflows`).
+- `state.ohio.DOT.drainage`, `idf`, `roadway_drainage`, `culvert_design`: ODOT
+  L&D Vol 2 (July 2026) as functions - design floods, Figure 1101-2 IDF,
+  rational method, ditches, pavement drainage and inlets, storm sewers and
+  the 4 % HGL, 1105 culvert sizing (with an agency conduit catalog option).
+- `water_resources`: HDS-5 culvert analysis (`culvert`), embankments and
+  digital-dam openings, StreamStats / NSS, Atlas 14 + MRMS precipitation,
+  irregular cross sections, scour screening, NWS alerts, FEMA NFHL, NHDPlus HR.
+- `geotech`: boring layers and DIGGS writer, PDF boring logs to DIGGS
+  (`state.ohio.DOT.boring_log_pdf`), strata correlation between borings
+  (`stratigraphy`).
+- `transportation`: clothoid spirals, unsymmetrical vertical curves, LandXML
+  1.2 alignments; `state.ohio.coordinates` (Ohio County Coordinate System,
+  88 zones checked against the published PRJ files).
+- `structural`: site and bridge-alternative schema records (`site_spec`),
+  SCD substructure / abutment BrIM emits incl. integral and semi-integral
+  abutments, gusset-plate geometry and riveted-truss BrIM (LOD 400/500, IFC
+  backend), prestressed box-beam and continuity-bar records (`bim_spec`),
+  box-bridge detail gallery, composite steel girder MIDAS payload builder.
+- `state.ohio.DOT`: permit-load route screen (`permit_route`), airway /
+  highway clearance screen, AssetWise inspection-file dump
+  (`civilpy odot photos`).
+- Scan-to-CAD (`civilpy.scan`), below.
+
+### Fixed
+
+- `MethodABearing.get_strain_from_stress` argument order (crashed on every call).
+- `bolted_field_splice` matches the NSBA Bolted Splice Designer v4.01 Hw rule.
+- `state.ohio.ogrip`: EPSG:6549 is Ohio North (comments).
+- `influence_lines` imports matplotlib only inside `plot()`.
+
+### Scan-to-CAD
+
 - **Scan-to-CAD: `civilpy.scan` — point-cloud segmentation, meshing and
   feature extraction for bridge sites.** `cloud` streams `.las`/`.laz`
   (laspy), `.xyz` and `.ply` through bbox / class / decimation / voxel-grid
