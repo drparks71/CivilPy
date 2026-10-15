@@ -281,3 +281,106 @@ def test_load_cases_keep_the_unit_in_force(unit, factor):
     m = read_std(_deck(joints, members, supports="1 4 FIXED", loads=loads))
     assert m.loads[0].units == f"{unit} KIP"
     assert m.loads[0].member[0][3] == pytest.approx(-0.1 * factor)
+
+
+# ---------------------------------------------------------------- moving loads
+from civilpy.structural.staad import Vehicle, distribute_wheel, wheel_positions  # noqa: E402
+
+
+def _grid_deck(n_fb=8, spacing=10.0, width=24.0, vehicle="TYPE 1 LOAD 10 5\nDIST 10 WID 6", gen="LOAD GENERATION 12\nTYPE 1 -10 5 9 XINC 7.5 YRANGE 0.1"):
+    """Two girder lines (z = 0, width) carrying transverse floorbeams at y = 5."""
+    joints, members, k = {}, {}, 1
+    for i in range(n_fb):
+        x = i * spacing
+        joints[100 + i] = (x, 0, 0)
+        joints[200 + i] = (x, 0, width)
+        joints[300 + i] = (x, 5, 0)
+        joints[400 + i] = (x, 5, width)
+        members[k] = (300 + i, 400 + i); k += 1          # floorbeam
+        members[k] = (100 + i, 300 + i); k += 1          # post
+        members[k] = (200 + i, 400 + i); k += 1
+        if i:
+            members[k] = (99 + i, 100 + i); k += 1       # girders
+            members[k] = (199 + i, 200 + i); k += 1
+    extra = f"DEFINE MOVING LOAD\n{vehicle}\n{gen}\n"
+    return read_std(_deck(joints, members, supports=f"100 200 {99 + n_fb} {199 + n_fb} PINNED", loads=extra))
+
+
+@pytest.mark.parametrize("loads,dist,wid", [([10, 5], [10], 6), ([8.5, 8.5, 6], [4, 10], 6), ([16, 16, 4], [14, 14], 0)])
+def test_wheel_positions_follow_staad(loads, dist, wid):
+    v = Vehicle(1, loads, dist, wid)
+    w = wheel_positions(v, (3.0, 9.0), (1.0, 0.0))
+    assert len(w) == len(loads) * (2 if wid else 1)
+    assert sum(f for *_, f in w) == pytest.approx(sum(loads) * (2 if wid else 1))
+    xs = sorted({round(x, 6) for x, _, _ in w})
+    assert xs[0] == 3.0 and xs[-1] == pytest.approx(3.0 + sum(dist))      # axles ahead of the reference
+    assert {round(z, 6) for _, z, _ in w} == ({9.0, 9.0 - wid} if wid else {9.0})
+
+
+@pytest.mark.parametrize("x", [12.5, 17.0, 20.0, 29.9])
+def test_lever_rule_splits_between_floorbeams(x):
+    m = _grid_deck()
+    import numpy as np
+    from civilpy.structural.staad import _band_segments
+    ids, seg = _band_segments(m, 5.0, 0.1)
+    parts = distribute_wheel(ids, seg, x, 9.0, (1.0, 0.0))
+    assert sum(f for _, f, _ in parts) == pytest.approx(1.0)
+    xs = {mm: m.joints[m.members[mm][0]][0] for mm, _, _ in parts}
+    assert sum(f * xs[mm] for mm, f, _ in parts) == pytest.approx(x)      # load centroid preserved
+    assert all(d == pytest.approx(9.0) for _, _, d in parts)
+
+
+@pytest.mark.parametrize("x,z", [(-1.0, 9.0), (75.0, 9.0), (30.0, -2.0), (30.0, 30.0)])
+def test_wheels_off_the_deck_carry_nothing(x, z):
+    m = _grid_deck()
+    from civilpy.structural.staad import _band_segments
+    ids, seg = _band_segments(m, 5.0, 0.1)
+    assert distribute_wheel(ids, seg, x, z, (1.0, 0.0)) == []
+
+
+@pytest.mark.parametrize("vehicle,per_truck", [("TYPE 1 LOAD 10 5\nDIST 10 WID 6", 30.0),
+                                               ("TYPE 1 LOAD 8.5 8.5 6\nDIST 4 10 WID 6", 46.0),
+                                               ("TYPE 1 HS20 1", 72.0)])
+def test_generated_cases_carry_the_whole_truck_when_on_deck(vehicle, per_truck):
+    m = _grid_deck(n_fb=10, vehicle=vehicle, gen="LOAD GENERATION 15\nTYPE 1 -30 5 9 XINC 5 YRANGE 0.1")
+    cases = [lc for lc in m.loads if lc.loadtype == "LIVE"]
+    assert len(cases) == 15 and [lc.number for lc in cases] == list(range(1, 16))
+    totals = [-sum(w for *_, w, _, _ in lc.member) for lc in cases]
+    assert max(totals) == pytest.approx(per_truck)
+    assert all(t <= per_truck + 1e-9 for t in totals)
+    p = to_midas(m)
+    env = [c for c in p["LCOM-GEN"].values() if c["iTYPE"] == 1][0]
+    assert len(env["vCOMB"]) == 15
+    assert all(s["TYPE"] == "L" for s in p["STLD"].values())
+
+
+@pytest.mark.parametrize("word", ["UNIT", "UNITS"])
+def test_units_spelling(word):
+    joints, members = portal()
+    loads = f"UNIT INCHES KIP\n{word} FEET KIP\nLOAD 1 TITLE U\nMEMBER LOAD\n2 UNI GY -0.1\n"
+    m = read_std(_deck(joints, members, supports="1 4 FIXED", loads=loads))
+    assert m.loads[0].member[0][3] == pytest.approx(-0.1)
+
+
+
+@pytest.mark.parametrize("n_fb", [4, 7])
+def test_floating_grid_gets_its_free_dofs_held(n_fb):
+    from civilpy.structural.staad import floating_restraints
+    joints, members = {}, {}
+    k = 1
+    for i in range(n_fb):                       # truss line at z=0 and z=20, floating grid above
+        joints[100 + i] = (10 * i, 0, 0); joints[200 + i] = (10 * i, 0, 20)
+        joints[700 + i] = (10 * i, 9, 0); joints[800 + i] = (10 * i, 9, 20)
+        members[k] = (700 + i, 800 + i); k += 1
+        if i:
+            members[k] = (99 + i, 100 + i); k += 1
+            members[k] = (199 + i, 200 + i); k += 1
+    slaves = "\n".join(f"SLAVE FY MX MASTER {700 + i} JOINT {100 + i}\nSLAVE FY MX MASTER {800 + i} JOINT {200 + i}"
+                        for i in range(n_fb))
+    m = read_std(_deck(joints, members, supports=f"100 200 {99 + n_fb} {199 + n_fb} PINNED", extra=slaves))
+    fl = floating_restraints(m)
+    assert set(fl) == {j for j in joints if j >= 700}
+    assert all(f == "1100110" for f in fl.values())       # DX DY RY RZ held; DZ, RX (the slaved pair) free
+    cons = to_midas(m)["CONS"]
+    assert cons["700"]["ITEMS"][0]["CONSTRAINT"] == "1100110"
+    assert cons["100"]["ITEMS"][0]["CONSTRAINT"] == "1110000"

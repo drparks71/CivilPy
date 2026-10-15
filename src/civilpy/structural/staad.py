@@ -38,9 +38,13 @@ from the AISC shape table bundled with civilpy.  A tapered ISECTION (DWW !=
 DWW1) is sent as the prismatic section at mid-depth: same weight, same
 average axial stiffness; its flexural stiffness is approximate.
 
-Not translated (reported in :attr:`StaadModel.skipped`): moving loads and
-``LOAD GENERATION``, design/analysis commands, and any member or joint load
-type outside UNI/CON and FX..MZ.
+``DEFINE MOVING LOAD`` + ``LOAD GENERATION`` become static cases of wheel
+loads on the members in the vertical range (:func:`generate_moving_loads`),
+the way STAAD itself turns them into primary load cases.
+
+Not translated (reported in :attr:`StaadModel.skipped`): vehicle files,
+design/analysis commands, and any member or joint load type outside UNI/CON
+and FX..MZ.
 """
 
 from __future__ import annotations
@@ -51,7 +55,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 __all__ = ["StaadModel", "Section", "LoadCase", "read_std", "to_midas",
-           "staad_to_midas_xyz", "expand_list", "logical_lines"]
+           "staad_to_midas_xyz", "expand_list", "logical_lines",
+           "generate_moving_loads", "wheel_positions", "distribute_wheel", "Vehicle"]
 
 _IN = {"INCH": 1 / 12, "INCHES": 1 / 12, "IN": 1 / 12, "FEET": 1.0, "FT": 1.0, "FOOT": 1.0,
        "MM": 1 / 304.8, "CM": 1 / 30.48, "METER": 1 / 0.3048, "METERS": 1 / 0.3048, "M": 1 / 0.3048}
@@ -96,6 +101,40 @@ class LoadCase:
         return bool(self.combination) and not (self.joint or self.member or self.selfweight)
 
 
+#: STAAD's built-in AASHTO trucks, per wheel (``fi`` is applied to *each* wheel
+#: -- TR.31.1), rear axle first; ``None`` is the variable spacing ``vs``.
+_AASHTO = {"HS20": ([16.0, 16.0, 4.0], [None, 14.0]), "HS15": ([12.0, 12.0, 3.0], [None, 14.0]),
+           "H20": ([16.0, 4.0], [14.0]), "H15": ([12.0, 3.0], [14.0])}
+
+
+@dataclass
+class Vehicle:
+    """A ``DEFINE MOVING LOAD`` type: wheel loads (kips, each applied to every
+    wheel of the axle), axle spacings (ft) and wheel spacing (ft; 0 = one line)."""
+    number: int
+    loads: list
+    spacing: list = field(default_factory=list)
+    width: float = 0.0
+    name: str = ""
+
+
+@dataclass
+class GeneratedTruck:
+    """One ``TYPE j x y z XINC ...`` line of a LOAD GENERATION block."""
+    vehicle: int
+    start: tuple          # reference (first) load position, STAAD axes, ft
+    xinc: float = 0.0
+    zinc: float = 0.0
+    yrange: float = 0.01
+
+
+@dataclass
+class LoadGeneration:
+    count: int
+    add_load: int | None = None
+    trucks: list = field(default_factory=list)
+
+
 @dataclass
 class StaadModel:
     """Everything :func:`read_std` understood, in **kip / ft** units."""
@@ -110,6 +149,8 @@ class StaadModel:
     slaves: list = field(default_factory=list)       # (master, dofs, [slaves])
     groups: dict = field(default_factory=dict)       # name -> ("MEMBER"|"JOINT", [ids])
     loads: list = field(default_factory=list)        # LoadCase
+    vehicles: dict = field(default_factory=dict)     # type -> Vehicle (DEFINE MOVING LOAD)
+    generations: list = field(default_factory=list)  # LoadGeneration (LOAD GENERATION blocks)
     job: dict = field(default_factory=dict)
     skipped: list = field(default_factory=list)      # human-readable notes
 
@@ -280,9 +321,10 @@ def _isection(name, vals, k) -> Section:
 
 
 # ----------------------------------------------------------------- reader
-def read_std(path_or_text) -> StaadModel:
+def read_std(path_or_text, *, generate: bool = True) -> StaadModel:
     """Parse a STAAD ``.std`` deck (path or the text itself) into a
-    :class:`StaadModel` in kip/ft."""
+    :class:`StaadModel` in kip/ft.  ``generate`` expands LOAD GENERATION
+    blocks into static cases (:func:`generate_moving_loads`)."""
     text = (Path(path_or_text).read_text(errors="replace")
             if isinstance(path_or_text, Path) or (isinstance(path_or_text, str) and "\n" not in path_or_text)
             else path_or_text)
@@ -297,13 +339,14 @@ def read_std(path_or_text) -> StaadModel:
     load: LoadCase | None = None
     lmode = None
     group_kind = None
+    last_vehicle = None
 
     for line in logical_lines(text):
         U = line.upper()
         tok = line.split()
         T0 = tok[0].upper()
 
-        if U.startswith("UNIT "):
+        if U.startswith(("UNIT ", "UNITS ")):
             for w in tok[1:]:
                 w = w.upper()
                 if w in _IN:
@@ -349,9 +392,12 @@ def read_std(path_or_text) -> StaadModel:
             m.slaves.append((int(tok[mi + 1]), dofs, expand_list(tok[ji + 1:])))
             continue
         if U.startswith("DEFINE MOVING LOAD"):
-            sect = "moving"; m.skipped.append("DEFINE MOVING LOAD (moving loads not translated)"); continue
+            sect = "moving"; continue
         if U.startswith("LOAD GENERATION"):
-            sect = "loadgen"; m.skipped.append(f"{line} (generated moving-load cases not translated)"); continue
+            ut = [t.upper() for t in tok]
+            add = int(tok[ut.index("LOAD", 2) + 1]) if "ADD" in ut else None
+            m.generations.append(LoadGeneration(int(tok[2]), add))
+            sect = "loadgen"; continue
         if U.startswith("LOAD COMB"):
             load = LoadCase(int(tok[2]), " ".join(tok[3:]), "COMB")
             m.loads.append(load); sect, lmode = "comb", None; continue
@@ -490,11 +536,157 @@ def read_std(path_or_text) -> StaadModel:
                     load.member.append((mm, kind, direction, w, d1, d2))
             else:
                 load.other.append(line); m.skipped.append(f"LOAD {load.number}: '{line}'")
+        elif sect == "moving":
+            ut = [t.upper() for t in tok]
+            if T0 == "TYPE":
+                n = int(tok[1])
+                if ut[2] == "LOAD":
+                    m.vehicles[n] = Vehicle(n, [float(x) * F for x in tok[3:]])
+                elif ut[2] in _AASHTO:
+                    f = float(tok[3]) if len(tok) > 3 else 1.0
+                    vs = float(tok[4]) * L if len(tok) > 4 else 14.0
+                    wheels, gaps = _AASHTO[ut[2]]
+                    gaps = [vs if g is None else g for g in gaps]
+                    m.vehicles[n] = Vehicle(n, [w * f for w in wheels], gaps, 6.0, ut[2])
+                else:
+                    m.skipped.append(f"moving load '{line}' not translated (vehicle file reference)")
+                last_vehicle = n
+            elif ut[0] in ("DIST", "DISTANCE", "WID", "WIDTH"):
+                v = m.vehicles[last_vehicle]
+                words = iter(zip(ut, tok))
+                key = None
+                for u, t in words:
+                    if u in ("DIST", "DISTANCE"):
+                        key = "dist"; continue
+                    if u in ("WID", "WIDTH"):
+                        key = "wid"; continue
+                    if key == "dist":
+                        v.spacing.append(float(t) * L)
+                    elif key == "wid":
+                        v.width = float(t) * L
+        elif sect == "loadgen":
+            if T0 == "TYPE":
+                ut = [t.upper() for t in tok]
+                x, y, z = (float(t) * L for t in tok[2:5])
+                kw = {k: float(tok[ut.index(k) + 1]) * L for k in ("XINC", "YINC", "ZINC", "YRANGE", "ZRANGE")
+                      if k in ut}
+                m.generations[-1].trucks.append(GeneratedTruck(int(tok[1]), (x, y, z), kw.get("XINC", 0.0),
+                                                               kw.get("ZINC", 0.0), kw.get("YRANGE", 0.01)))
         elif sect == "comb":
             nums = tok
             for a, b in zip(nums[::2], nums[1::2]):
                 load.combination.append((int(a), float(b)))
+    if generate and m.generations:
+        generate_moving_loads(m)
     return m
+
+
+# ----------------------------------------------------------------- moving loads
+def wheel_positions(vehicle: Vehicle, ref: tuple, direction: tuple) -> list[tuple[float, float, float]]:
+    """Plan positions ``(x, z, load)`` of every wheel of ``vehicle`` with its
+    reference (first) load at ``ref`` = (x, z).
+
+    STAAD TR.31.1: load ``i+1`` sits ``DIST i`` ahead of load ``i`` in the
+    direction of movement; every load value is applied to each wheel; with a
+    WIDTH the reference is on the +Z wheel track for movement along X (the
+    least-X track for movement along Z), the second track ``WID`` across.
+    """
+    dx, dz = direction
+    n = math.hypot(dx, dz)
+    dx, dz = dx / n, dz / n
+    across = (dz, -dx)                       # +X travel -> second track at -Z
+    out, a = [], 0.0
+    for i, f in enumerate(vehicle.loads):
+        if i:
+            a += vehicle.spacing[i - 1]
+        x, z = ref[0] + a * dx, ref[1] + a * dz
+        out.append((x, z, f))
+        if vehicle.width:
+            out.append((x + vehicle.width * across[0], z + vehicle.width * across[1], f))
+    return out
+
+
+def _band_segments(model: StaadModel, y: float, r: float):
+    import numpy as np
+    ids, seg = [], []
+    for mm, (i, j) in model.members.items():
+        a, b = model.joints[i], model.joints[j]
+        if abs(a[1] - y) <= r + 1e-9 and abs(b[1] - y) <= r + 1e-9:
+            ids.append(mm)
+            seg.append((a[0], a[2], b[0], b[2]))
+    return ids, np.array(seg, dtype=float).reshape(-1, 4)
+
+
+def distribute_wheel(ids, seg, x, z, direction, tol=0.01):
+    """Members and positions that carry a wheel at plan point (x, z).
+
+    A wheel on a member (within ``tol``) goes to that member.  Otherwise it is
+    shared by the lever rule between the nearest members crossed behind and
+    ahead of it along the direction of travel -- stringers simply supported
+    between floorbeams.  A wheel with nothing on one side is off the deck and
+    carries nothing.  STAAD does not document its own panel rule; this one is
+    checked against STAAD output in the HAM-50-2180N rebuild.
+    Returns ``[(member, fraction, distance_from_start_ft), ...]``.
+    """
+    import numpy as np
+    if not len(ids):
+        return []
+    x1, z1, x2, z2 = seg.T
+    ex, ez = x2 - x1, z2 - z1
+    L2 = ex * ex + ez * ez
+    s = np.clip(((x - x1) * ex + (z - z1) * ez) / np.where(L2 > 0, L2, 1), 0, 1)
+    dist = np.hypot(x1 + s * ex - x, z1 + s * ez - z)
+    k = int(np.argmin(dist))
+    if dist[k] <= tol:
+        return [(ids[k], 1.0, float(s[k] * math.sqrt(L2[k])))]
+    dx, dz = direction
+    n = math.hypot(dx, dz)
+    dx, dz = dx / n, dz / n
+    den = dx * ez - dz * ex                   # cross(d, e)
+    ok = np.abs(den) > 1e-12
+    den = np.where(ok, den, 1)
+    t = ((x1 - x) * ez - (z1 - z) * ex) / den             # along travel
+    u = ((x1 - x) * dz - (z1 - z) * dx) / den             # along member
+    hit = ok & (u >= -1e-9) & (u <= 1 + 1e-9)
+    back = np.where(hit & (t < 0), t, -np.inf)
+    ahead = np.where(hit & (t > 0), t, np.inf)
+    kb, ka = int(np.argmax(back)), int(np.argmin(ahead))
+    if not np.isfinite(back[kb]) or not np.isfinite(ahead[ka]):
+        return []
+    tb, ta = -back[kb], ahead[ka]
+    return [(ids[kb], ta / (ta + tb), float(np.clip(u[kb], 0, 1) * math.sqrt(L2[kb]))),
+            (ids[ka], tb / (ta + tb), float(np.clip(u[ka], 0, 1) * math.sqrt(L2[ka])))]
+
+
+def generate_moving_loads(model: StaadModel, *, tol: float = 0.01) -> list[LoadCase]:
+    """Expand every LOAD GENERATION block into static cases of concentrated
+    member loads (STAAD numbering: each block continues from the previous
+    highest case number).  Appends them to ``model.loads`` and returns them."""
+    out = []
+    bands = {}
+    for g, gen in enumerate(model.generations, 1):
+        base = max((lc.number for lc in model.loads), default=0)
+        added = next((lc for lc in model.loads if lc.number == gen.add_load), None) if gen.add_load else None
+        for k in range(gen.count):
+            lc = LoadCase(base + k + 1, f"GEN{g} POS{k + 1:03d}", "LIVE")
+            if added is not None:
+                lc.member.extend(added.member)
+                lc.joint.extend(added.joint)
+                lc.selfweight = added.selfweight
+            for tr in gen.trucks:
+                v = model.vehicles[tr.vehicle]
+                key = (round(tr.start[1], 6), tr.yrange)
+                if key not in bands:
+                    bands[key] = _band_segments(model, tr.start[1], tr.yrange)
+                ids, seg = bands[key]
+                direction = (tr.xinc, tr.zinc) if (tr.xinc or tr.zinc) else (1.0, 0.0)
+                ref = (tr.start[0] + k * tr.xinc, tr.start[2] + k * tr.zinc)
+                for x, z, f in wheel_positions(v, ref, direction):
+                    for mm, frac, d in distribute_wheel(ids, seg, x, z, direction, tol):
+                        lc.member.append((mm, "CON", "GY", -f * frac, d, None))
+            model.loads.append(lc)
+            out.append(lc)
+    return out
 
 
 # ----------------------------------------------------------------- translator
@@ -600,6 +792,13 @@ def to_midas(model: StaadModel, *, vertical_beta: float = 0.0, matl_name: str = 
             f = list(body["ITEMS"][0]["CONSTRAINT"])
             f[3] = f[4] = f[5] = "1"
             body["ITEMS"][0]["CONSTRAINT"] = "".join(f)
+    for jt, flags in floating_restraints(model).items():
+        body = cons.setdefault(str(jt), {"ITEMS": [{"ID": 1, "GROUP_NAME": "", "CONSTRAINT": "0000000"}]})
+        f = list(body["ITEMS"][0]["CONSTRAINT"])
+        for i, c in enumerate(flags):
+            if c == "1":
+                f[i] = "1"
+        body["ITEMS"][0]["CONSTRAINT"] = "".join(f)
     out["CONS"] = cons
     out["FRLS"] = frls
 
@@ -623,6 +822,54 @@ def to_midas(model: StaadModel, *, vertical_beta: float = 0.0, matl_name: str = 
                        for n, (g, (kind, ids)) in enumerate(model.groups.items(), 1)}
 
     out.update(midas_loads(model, load_type=load_type))
+    return out
+
+
+def floating_restraints(model: StaadModel, tol: float = 1e-6) -> dict:
+    """MIDAS restraint flags for the nodes of unsupported parts that hang on
+    master/slave links only (STAAD's "floating" live-load grid).
+
+    Such a part is tied to the structure in the slaved DOFs alone; along the
+    others it has rigid-body freedom that STAAD steps over with an instability
+    warning and MIDAS reports as a singular matrix (NaN results).  Each of its
+    nodes gets the horizontal translations and the rotation about vertical
+    restrained, plus the twist about a plan axis when every member at the node
+    runs along that axis.  With vertical loads only those DOFs carry nothing.
+    Returns ``{joint: "DX DY DZ RX RY RZ RW" flags}``.
+    """
+    if not model.slaves:
+        return {}
+    adj: dict = {j: set() for j in model.joints}
+    for mm, (i, j) in model.members.items():
+        adj[i].add(j); adj[j].add(i)
+    seen, out = set(), {}
+    for start in model.joints:
+        if start in seen:
+            continue
+        comp, stack = set(), [start]
+        while stack:
+            n = stack.pop()
+            if n in comp:
+                continue
+            comp.add(n); stack.extend(adj[n] - comp)
+        seen |= comp
+        if any(j in model.supports for j in comp):
+            continue
+        if not any(m in comp or any(s in comp for s in sl) for m, _, sl in model.slaves):
+            continue
+        for j in comp:
+            f = ["0"] * 7
+            f[0] = f[1] = f[5] = "1"                 # DX, DY, RZ
+            dirs = []
+            for mm, (a, b) in model.members.items():
+                if j in (a, b):
+                    pa, pb = staad_to_midas_xyz(model.joints[a]), staad_to_midas_xyz(model.joints[b])
+                    dirs.append(tuple(pb[k] - pa[k] for k in range(3)))
+            if dirs and all(abs(d[0]) < tol and abs(d[2]) < tol for d in dirs):
+                f[4] = "1"                           # all along MIDAS Y: twist is RY
+            if dirs and all(abs(d[1]) < tol and abs(d[2]) < tol for d in dirs):
+                f[3] = "1"                           # all along MIDAS X: twist is RX
+            out[j] = "".join(f)
     return out
 
 
@@ -652,7 +899,7 @@ def case_name(lc: LoadCase) -> str:
     return f"{lc.number} {lc.title}".strip()[:40]
 
 
-def midas_loads(model: StaadModel, *, load_type: str = "D") -> dict:
+def midas_loads(model: StaadModel, *, load_type: str = "D", envelope: bool = True) -> dict:
     """STLD / BODF / CNLD / BMLD / LCOM-GEN for the static cases."""
     stld, bodf, cnld, bmld, lcom = {}, {}, {}, {}, {}
     names = {lc.number: case_name(lc) for lc in model.loads}
@@ -661,7 +908,8 @@ def midas_loads(model: StaadModel, *, load_type: str = "D") -> dict:
         if lc.is_combination:
             continue
         n += 1
-        stld[str(n)] = {"NAME": names[lc.number], "TYPE": load_type, "DESC": f"STAAD LOAD {lc.number} {lc.loadtype}".strip()}
+        typ = {"DEAD": "D", "LIVE": "L"}.get(lc.loadtype.upper(), load_type)
+        stld[str(n)] = {"NAME": names[lc.number], "TYPE": typ, "DESC": f"STAAD LOAD {lc.number} {lc.loadtype}".strip()}
         if lc.selfweight:
             d, f = lc.selfweight
             v = [0.0, 0.0, 0.0]
@@ -701,6 +949,12 @@ def midas_loads(model: StaadModel, *, load_type: str = "D") -> dict:
         k += 1
         lcom[str(k)] = {"NAME": names[lc.number][:20], "ACTIVE": "ACTIVE", "iTYPE": 0, "DESC": lc.title,
                         "vCOMB": [{"ANAL": "ST", "LCNAME": names[c], "FACTOR": f} for c, f in lc.combination]}
+    generated = [lc for lc in model.loads if lc.loadtype == "LIVE" and lc.title.startswith("GEN")]
+    if envelope and generated:
+        k += 1
+        lcom[str(k)] = {"NAME": "LL ENVELOPE", "ACTIVE": "ACTIVE", "iTYPE": 1,
+                        "DESC": f"envelope of {len(generated)} generated moving-load cases",
+                        "vCOMB": [{"ANAL": "ST", "LCNAME": names[lc.number], "FACTOR": 1.0} for lc in generated]}
     out = {"STLD": stld}
     for t, b in (("BODF", bodf), ("CNLD", cnld), ("BMLD", bmld), ("LCOM-GEN", lcom)):
         if b:
