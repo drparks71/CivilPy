@@ -272,3 +272,12 @@ def test_zero_loads_are_dropped(name):
     loads = f"LOAD 1 TITLE Z\nMEMBER LOAD\n1 UNI GY 0\n2 UNI GY -0.1\nJOINT LOAD\n{min(joints)} FY 0\n"
     p = to_midas(read_std(_deck(joints, members, supports=f"{min(joints)} FIXED", loads=loads)))
     assert set(p["BMLD"]) == {"2"} and "CNLD" not in p
+
+
+@pytest.mark.parametrize("unit,factor", [("FEET", 1.0), ("INCHES", 12.0)])
+def test_load_cases_keep_the_unit_in_force(unit, factor):
+    joints, members = portal()
+    loads = f"UNIT {unit} KIP\nLOAD 1 TITLE U\nMEMBER LOAD\n2 UNI GY -0.1\n"
+    m = read_std(_deck(joints, members, supports="1 4 FIXED", loads=loads))
+    assert m.loads[0].units == f"{unit} KIP"
+    assert m.loads[0].member[0][3] == pytest.approx(-0.1 * factor)

@@ -84,6 +84,7 @@ class LoadCase:
     number: int
     title: str = ""
     loadtype: str = ""
+    units: str = "FEET KIP"                     # STAAD UNIT in force when the case was read
     selfweight: tuple | None = None             # (direction, factor)
     joint: list = field(default_factory=list)   # (joint, {FX: v, ...})
     member: list = field(default_factory=list)  # (member, kind, dir, w, d1, d2)
@@ -287,6 +288,7 @@ def read_std(path_or_text) -> StaadModel:
             else path_or_text)
     m = StaadModel()
     L, F = 1.0, 1.0                     # current length / force factors to ft / kip
+    unit_name = ["FEET", "KIP"]
     sect = None
     table = None
     tables: dict = {}                   # (table, name) -> (kind, values, length factor)
@@ -305,9 +307,9 @@ def read_std(path_or_text) -> StaadModel:
             for w in tok[1:]:
                 w = w.upper()
                 if w in _IN:
-                    L = _IN[w]
+                    L, unit_name[0] = _IN[w], w
                 elif w in _FORCE:
-                    F = _FORCE[w]
+                    F, unit_name[1] = _FORCE[w], w
             continue
         if U.startswith(("ENGINEER ", "JOB ")):
             m.job[" ".join(tok[:2]).upper()] = " ".join(tok[2:])
@@ -358,7 +360,7 @@ def read_std(path_or_text) -> StaadModel:
             lt = ""
             if "LOADTYPE" in U:
                 lt = tok[[t.upper() for t in tok].index("LOADTYPE") + 1]
-            load = LoadCase(int(tok[1]), title, lt)
+            load = LoadCase(int(tok[1]), title, lt, units=" ".join(unit_name))
             m.loads.append(load); sect, lmode = "load", None; continue
         if U.startswith(("PERFORM", "FINISH", "PRINT", "LOAD LIST", "PARAMETER", "CHECK", "SELECT",
                          "DEFINE ENVELOPE", "CHANGE")):
