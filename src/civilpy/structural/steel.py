@@ -27,7 +27,8 @@ csv_filepath = os.path.join(script_dir, "res", "steel_shapes.csv")
 historic_csv_filepath = os.path.join(script_dir, "res", "aisc_shapes_historic.csv")
 
 steel_tables = pd.read_csv(csv_filepath)
-historic_steel_tables = pd.read_csv(historic_csv_filepath, low_memory=False)
+# A few cells are a lone space (P 1.25 rx/ry); read them as missing so the column stays numeric
+historic_steel_tables = pd.read_csv(historic_csv_filepath, low_memory=False, na_values=[" "])
 historic_shapes = historic_steel_tables[historic_steel_tables['Edition']=='Historic']
 
 def conv_frac_str(fraction_string: str) -> float:

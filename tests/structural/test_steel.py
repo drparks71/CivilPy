@@ -4,6 +4,7 @@
 #  SPDX-License-Identifier: MIT
 #  See the LICENSE file in the project root for full license text.
 
+import pandas as pd
 import unittest
 from src.civilpy.structural.steel import SteelSection, conv_frac_str
 from src.civilpy.structural.steel import W, M, S, HP, C, MC, L, WT, MT, ST
@@ -236,3 +237,14 @@ class TestBoltMaterial(unittest.TestCase):
     def test_bolt_material_repr(self):
         from src.civilpy.structural.steel import A325
         self.assertIn("A325", repr(A325))
+
+
+import pytest
+from src.civilpy.structural.steel import historic_steel_tables
+
+
+@pytest.mark.parametrize("column", ["A", "Ix", "Zx", "Sx", "rx", "Iy", "Zy", "Sy", "ry"])
+def test_historic_property_columns_are_numeric(column):
+    # HistoricSteelSection multiplies these straight by units; a text column only
+    # worked while pint (< 0.26) parsed numeric strings
+    assert pd.api.types.is_numeric_dtype(historic_steel_tables[column])
