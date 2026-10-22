@@ -340,10 +340,10 @@ def splice_writeback_tags(design) -> dict:
 
     rows = []
     for c in design.checks:
-        verdict = "OK" if c.ok else "NG"
+        verdict = "OK" if c.ok else ("NOTICE" if c.advisory else "NG")
         rows.append(f"{c.article}|{c.name}|{num(c.demand)}|"
                     f"{num(c.factored_capacity)}|{verdict}")
-    ng = sum(1 for c in design.checks if not c.ok)
+    ng = sum(1 for c in design.checks if not c.ok and not c.advisory)
     status = "OK" if design.ok else "NG"
     summary = (f"{design.top_flange.total_bolts} bolts/flange, "
                f"web {design.web.total_bolts}; {len(design.checks)} checks"

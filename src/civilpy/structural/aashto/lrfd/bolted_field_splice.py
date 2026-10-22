@@ -27,7 +27,12 @@ of Pfy when the inner and outer plate areas differ by more than 10 %.
 ``method="stress_based"`` is the pre-9th-Edition design-stress method
 (Fcf with the 0.75 Fy floor).  The bolt shear coefficient is the 8th-Edition
 value (0.56/0.45) via ``design_year``.  Validated against the four v4.01
-example workbooks (tests/structural/test_bolted_field_splice.py).
+example workbooks and the NSBA Steel Bridge Design Handbook Ch. 14 (Dec 2025)
+Design Examples 1 and 2 (tests/structural/test_bolted_field_splice.py).
+
+Slip of the flange bolts alone is reported as an advisory check: when they
+cannot carry the Service II / deck-casting slip moment the excess goes to the
+web as ``Hw`` and the web slip check governs (C6.13.6.1.3b).
 
 The web bolt group is sized for the design shear combined with the horizontal
 force ``Hw`` from the portion of the moment the flanges cannot carry
@@ -244,8 +249,9 @@ class BoltSpec:
     diameter: float = 0.875
     flange_threads_excluded: bool = True
     web_threads_excluded: bool = False
-    surface_class: str = "B"  # Ks class
+    surface_class: str = "B"  # Ks class (Class C also takes Kc = 0.80)
     hole_type: str = "standard"  # Kh
+    duplex_galvanized: bool = False  # Kc = 0.80 for duplex over galvanizing
 
 
 @dataclass(frozen=True)
@@ -344,7 +350,7 @@ class ComponentDesign:
 
     @property
     def ok(self) -> bool:
-        return all(c.ok is not False for c in self.checks)
+        return all(c.ok is not False or c.advisory for c in self.checks)
 
 
 @dataclass
@@ -450,11 +456,9 @@ def _design_flange(inp: SpliceInput, position: str) -> ComponentDesign:
         f_design = splices.flange_design_stress_fcf(
             fcf, fy_flange, r_h=inp.r_h, alpha=inp.alpha)
 
-    pfy_l, ag_l, an_l, ae_l, fy_l, fu_l = _flange_pfy(
-        left_f, n_rows, net_hole, f_design)
+    pfy_l, _, _, ae_l, _, _ = _flange_pfy(left_f, n_rows, net_hole, f_design)
     pfy_r, *_ = _flange_pfy(right_f, n_rows, net_hole, f_design)
     pfy = min(pfy_l, pfy_r)                      # weaker flange governs
-    ctrl = left_f if pfy_l <= pfy_r else right_f
 
     # filler on the thinner flange (thickness difference >= 1/8 in matters)
     filler_t = abs(left_f.thickness - right_f.thickness)
@@ -507,7 +511,7 @@ def _design_flange(inp: SpliceInput, position: str) -> ComponentDesign:
     slip = steel.bolt_slip_resistance(
         bolt_grade=b.bolt_type, d_bolt=b.diameter,
         n_planes=2, hole_type=b.hole_type,
-        surface_class=b.surface_class,
+        surface_class=b.surface_class, duplex_galvanized=b.duplex_galvanized,
     )
     pt_per = slip.capacity
 
@@ -586,19 +590,25 @@ def _design_flange(inp: SpliceInput, position: str) -> ComponentDesign:
                "arm_steel": arm_steel, "cols": cols, "hole_dia": hole,
                "slip_force": slip_force, "pt_per": pt_per},
     )
-    # Service II slip check (6.13.2.8): the provided bolts must furnish more
-    # nominal slip resistance than the flange force at Service II.
+    # Service II / deck-casting slip of the flange bolts alone (6.13.2.8,
+    # C6.13.6.1.3b).  Advisory: when the flange bolts cannot carry the slip
+    # moment the excess goes to the web as Hw and the web slip check is the
+    # governing limit state (6.13.6.1.3c), so a shortfall here is a NOTICE,
+    # not a failure of the splice.
     comp.checks.append(CheckResult(
         article="6.13.2.8", name=f"{position} flange Service II slip",
-        capacity=controlling * pt_per, demand=slip_force))
+        capacity=controlling * pt_per, demand=slip_force, advisory=True,
+        details={"excess_to_web": controlling * pt_per < slip_force}))
     # Net-area / block-shear deductions use the 6.8.3 hole (stress_based); nsba
     # keeps the bare nominal hole for continuity with the legacy designs.
-    _flange_checks(inp, comp, plates, ctrl, pfy, fy_l, fu_l, net_hole, n_rows)
+    _flange_checks(inp, comp, plates, (left_f, right_f), pfy, net_hole, n_rows)
     return comp
 
 
-def _flange_checks(inp, comp, plates, ctrl, pfy, fy, fu, hole, n_rows):
-    """Splice-plate and girder-flange limit-state checks for one flange."""
+def _flange_checks(inp, comp, plates, flanges, pfy, hole, n_rows):
+    """Splice-plate and girder-flange limit-state checks for one flange.
+    ``flanges`` is the (left, right) pair; each girder flange is checked with
+    its own thickness and Fy/Fu and the weaker governs."""
     plate_fy, plate_fu = _grade(plates.material)
     sp = splices.splice_plate_design_force(
         pfy, plates.outer_area, plates.inner_area)
@@ -638,38 +648,60 @@ def _flange_checks(inp, comp, plates, ctrl, pfy, fy, fu, hole, n_rows):
     # block shear on the girder flange (6.13.4): the two bolt groups can tear
     # out independently (Mode 1, four shear planes) or as one block around the
     # outside (Mode 2, two shear planes through the wider tension planes); the
-    # smaller resistance governs.
-    mode1 = _block_shear(
-        n_shear=4, l_shear=l_shear, holes_shear=holes_shear, n_tension=2,
-        tens_gross=comp.gage_bolts, holes_tension=1.0, t=ctrl.thickness,
-        f_y=fy, f_u=fu, hole=hole, p_u=pfy,
-        name="girder flange block shear (Mode 1)")
-    mode2 = _block_shear(
-        n_shear=2, l_shear=l_shear, holes_shear=holes_shear, n_tension=2,
-        tens_gross=comp.gage_bolts + comp.edge, holes_tension=1.5,
-        t=ctrl.thickness, f_y=fy, f_u=fu, hole=hole, p_u=pfy,
-        name="girder flange block shear (Mode 2)")
-    checks.append(mode1)
-    checks.append(mode2)
+    # smaller resistance governs.  Both flanges are checked, each with its own
+    # thickness and material, and the weaker side is reported.
+    def _girder_block(flange, mode):
+        f_y, f_u = _grade(flange.material)
+        if mode == 1:
+            n_shear, tens, holes_t = 4, comp.gage_bolts, 1.0
+        else:
+            n_shear, tens, holes_t = 2, comp.gage_bolts + comp.edge, 1.5
+        return _block_shear(
+            n_shear=n_shear, l_shear=l_shear, holes_shear=holes_shear,
+            n_tension=2, tens_gross=tens, holes_tension=holes_t,
+            t=flange.thickness, f_y=f_y, f_u=f_u, hole=hole, p_u=pfy,
+            name=f"girder flange block shear (Mode {mode})")
+
+    for mode in (1, 2):
+        checks.append(min((_girder_block(f, mode) for f in flanges),
+                          key=lambda c: c.factored_capacity))
 
     # bearing at the flange bolt holes (6.13.2.9): each bolt delivers the
-    # lesser of its (filler-reduced) shear capacity or the hole bearing
-    # resistance; interior holes govern the group total (end holes carry no
-    # less than interior once bolt shear controls).
+    # lesser of its (filler-reduced) shear capacity or its hole's bearing
+    # resistance -- the n_rows holes at the flange end on the end clear
+    # distance, the rest on the clear distance between holes.  The connected
+    # part with the smallest bearing total governs: either girder flange, or
+    # the inner + outer splice plates together.
     r_fill = comp.extra["filler_R"]
     bolt = steel.bolt_shear_resistance(
         d_bolt=inp.bolts.diameter, f_ub=BOLT_FU[inp.bolts.bolt_type],
         n_planes=plates.shear_planes,
         threads_excluded=inp.bolts.flange_threads_excluded,
         design_year=inp.design_year)
-    interior = steel.bolt_bearing_resistance(
-        d_bolt=inp.bolts.diameter, t_ply=ctrl.thickness, f_u_ply=fu,
-        clear_distance=comp.pitch - hole)
-    per_bolt = min(bolt.factored_capacity * r_fill,
-                   interior.factored_capacity)
+    shear_per_bolt = bolt.factored_capacity * r_fill
+    n_end = min(n_rows, comp.total_bolts)
+    n_int = comp.total_bolts - n_end
+
+    def _bearing_total(t, f_u):
+        def per_hole(lc):
+            br = steel.bolt_bearing_resistance(
+                d_bolt=inp.bolts.diameter, t_ply=t, f_u_ply=f_u,
+                clear_distance=lc)
+            return min(shear_per_bolt, br.factored_capacity)
+        return (n_end * per_hole(comp.end - hole / 2.0)
+                + n_int * per_hole(comp.pitch - hole))
+
+    parts = [(f"{'left' if i == 0 else 'right'} flange", f.thickness,
+              _grade(f.material)[1]) for i, f in enumerate(flanges)]
+    parts.append(("splice plates", plates.inner_thickness
+                  + plates.outer_thickness, _grade(plates.material)[1]))
+    governing, total = min(((p[0], _bearing_total(p[1], p[2])) for p in parts),
+                           key=lambda x: x[1])
+    if total >= comp.total_bolts * shear_per_bolt - 1e-9:
+        governing = "bolt shear"
     checks.append(CheckResult(
         article="6.13.2.9", name="girder flange bearing",
-        capacity=per_bolt * comp.total_bolts, demand=pfy))
+        capacity=total, demand=pfy, details={"governing": governing}))
 
 
 # --- web design -------------------------------------------------------------
@@ -763,7 +795,8 @@ def _design_web(inp: SpliceInput, top: ComponentDesign,
 
     slip = steel.bolt_slip_resistance(
         bolt_grade=b.bolt_type, d_bolt=b.diameter, n_planes=wp.shear_planes,
-        hole_type=b.hole_type, surface_class=b.surface_class)
+        hole_type=b.hole_type, surface_class=b.surface_class,
+        duplex_galvanized=b.duplex_galvanized)
     pt_per = slip.capacity
 
     # Service: Hw from the moment the flange *slip* resistance cannot carry

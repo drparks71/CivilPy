@@ -453,20 +453,26 @@ def bolt_slip_resistance(
     hole_type: str = "standard",
     surface_class: str = "B",
     v_serv: float | None = None,
+    duplex_galvanized: bool = False,
 ) -> CheckResult:
     """Slip resistance of one bolt in a slip-critical connection
-    (6.13.2.8-1): Rn = Kh*Ks*Ns*Pt, checked under Service II (phi = 1.0).
-    Pretension Pt from Table 6.13.2.8-2."""
+    (6.13.2.8-1): Rn = Kc*Kh*Ks*Ns*Pt, checked under Service II (phi = 1.0).
+    Pretension Pt from Table 6.13.2.8-2.
+
+    The creep factor Kc (10th Edition) is 0.80 for Class C (galvanized)
+    faying surfaces and for duplex coatings over a galvanized subsurface
+    (``duplex_galvanized``), 1.0 otherwise."""
     p_t = BOLT_PRETENSION[(bolt_grade, d_bolt)]
     k_h = SLIP_HOLE_FACTORS[hole_type]
     k_s = SLIP_SURFACE_FACTORS[surface_class]
-    r_n = k_h * k_s * n_planes * p_t
+    k_c = 0.80 if (surface_class == "C" or duplex_galvanized) else 1.0
+    r_n = k_c * k_h * k_s * n_planes * p_t
     return CheckResult(
         article="6.13.2.8",
         name="Bolt Slip Resistance",
         capacity=r_n,
         demand=v_serv,
-        details={"Pt": p_t, "Kh": k_h, "Ks": k_s, "Ns": n_planes},
+        details={"Pt": p_t, "Kc": k_c, "Kh": k_h, "Ks": k_s, "Ns": n_planes},
     )
 
 

@@ -163,7 +163,7 @@ class TestSpliceWriteBack:
         assert m["status"] == "OK" and m["line"] == "1"
         assert m["point"][0] == pytest.approx(100.0)
         assert all(len(rec) == 5 for rec in m["checks"])
-        assert all(rec[4] in ("OK", "NG") for rec in m["checks"])
+        assert all(rec[4] in ("OK", "NG", "NOTICE") for rec in m["checks"])
         # a smart-node marker minted a persistent gdr.id
         assert m["id"]
 

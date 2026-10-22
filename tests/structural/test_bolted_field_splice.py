@@ -15,6 +15,8 @@ this module uses the exact AASHTO 6.13.6.1.3b resistance-factor ratio
 phi_u/phi_y = 0.80/0.95 where the reference rounds it to 0.84; the tolerance
 below absorbs that."""
 
+from dataclasses import replace
+
 import pytest
 
 from civilpy.structural.aashto.lrfd import (
@@ -141,9 +143,10 @@ class TestDesignOne:
 # Worked design 2 — deeper girder, unstiffened left web, moment-critical.
 # The flanges cannot carry the full negative splice moment, so the excess is
 # delivered to the web as a horizontal force Hw (6.13.6.1.3c) that drives the
-# web bolt count to 66.  The flanges are also over-stressed at Service II: the
-# negative-moment slip check fails (mirrors the reference NOTICE), so the
-# overall design is not "ok".  Bolt sizing and layout match the reference.
+# web bolt count to 66.  The flange bolts alone also cannot carry the negative
+# Service II slip moment (the reference NOTICE); that excess goes to the web as
+# Hw and the web slip check passes, so the design is "ok" (C6.13.6.1.3b).
+# Bolt sizing and layout match the reference.
 # ---------------------------------------------------------------------------
 
 def _design_two():
@@ -224,12 +227,15 @@ class TestDesignTwo:
             2.0 / 3.0, rel=1e-4)
 
     def test_service_slip_governs_notice(self):
-        # Over-stressed flanges: the negative Service II slip check fails,
-        # matching the reference NOTICE; the overall design is not ok.
+        # The flange bolts alone fall short at Service II (the reference
+        # NOTICE): an advisory result, with the excess carried by the web.
         slip = {c.name: c for c in self.d.top_flange.checks}[
             "top flange Service II slip"]
         assert slip.ok is False
-        assert not self.d.ok
+        assert slip.advisory and slip.details["excess_to_web"]
+        web_slip = {c.name: c for c in self.d.web.checks}["web Service II slip"]
+        assert web_slip.ok
+        assert self.d.ok
 
 
 # ---------------------------------------------------------------------------
@@ -420,3 +426,197 @@ class TestNsba401Examples:
         assert d.top_flange.extra["filler_R"] == pytest.approx(0.75)
         assert d.web.extra["slab_status"] == "NOTICE"
         assert d.web.extra["hw_strength"] == pytest.approx(1652.0, rel=0.02)
+
+
+# ---------------------------------------------------------------------------
+# NSBA Steel Bridge Design Handbook Ch. 14 (Splice Design, 10th Edition
+# AASHTO, revised December 2025) Design Examples 1 and 2.  These differ from
+# the v4.01 workbook examples above (Example 1's left bottom flange is 1-3/4 in
+# here, so the bottom flange needs 28 bolts).  Expected values are the
+# handbook's hand-calculated results; it rounds 0.84*Fu/Fy, so forces carry a
+# <1% offset.
+# ---------------------------------------------------------------------------
+
+def _sbdh_example_1(**overrides):
+    inp = SpliceInput(
+        left=GirderSide(Flange("Grade 50W", 1.0, 16.0), Flange("Grade 50W", 1.75, 18.0),
+                        "Grade 50W", 0.5, 69.0, haunch=1.0, stiffener_spacing_ft=3 * 69 / 12),
+        right=GirderSide(Flange("HPS Grade 70W", 1.0, 18.0), Flange("HPS Grade 70W", 1.0, 20.0),
+                         "Grade 50W", 0.5625, 69.0, haunch=1.0, stiffener_spacing_ft=2 * 69 / 12),
+        loads=SpliceLoads(dc1_m=248, dc2_m=50, dw_m=52, ll_pos_m=2469, ll_neg_m=-1754,
+                          deck_cast_m=1300, dc1_v=-82, dc2_v=-12, dw_v=-11,
+                          ll_pos_v=19, ll_neg_v=-112, deck_cast_v=-82),
+        bolts=BoltSpec("A325", 0.875, flange_threads_excluded=True, web_threads_excluded=False),
+        top_plates=PlatePair("Grade 50W", 0.6875, 7.0, 0.625, 16.0),
+        bottom_plates=PlatePair("Grade 50W", 0.875, 8.0, 0.75, 18.0),
+        web_plate=WebPlate("Grade 50W", 0.3125),
+        deck_thickness=9.0, deck_eff_width=144.0, fc=4.0,
+        flange_edge=2.0, flange_end=1.5, web_edge=2.0, web_end=1.5,
+    )
+    return replace(inp, **overrides)
+
+
+def _sbdh_example_2(**overrides):
+    inp = SpliceInput(
+        left=GirderSide(Flange("Grade 50", 1.0, 19.0), Flange("Grade 50", 1.4375, 20.0),
+                        "Grade 50", 0.75, 109.0, haunch=2.0, stiffened=False),
+        right=GirderSide(Flange("Grade 50", 2.0, 22.0), Flange("Grade 50", 2.25, 24.0),
+                         "Grade 50", 0.75, 109.0, haunch=2.0, stiffener_spacing_ft=3 * 109 / 12),
+        loads=SpliceLoads(dc1_m=-1564, dc2_m=-242, dw_m=-315, ll_pos_m=5627, ll_neg_m=-7117,
+                          deck_cast_m=3006, dc1_v=-147, dc2_v=-28, dw_v=-37,
+                          ll_pos_v=19, ll_neg_v=-126, deck_cast_v=-79),
+        bolts=BoltSpec("A325", 0.875, flange_threads_excluded=True, web_threads_excluded=False),
+        top_plates=PlatePair("Grade 50", 0.625, 8.5, 0.5625, 19.0),
+        bottom_plates=PlatePair("Grade 50", 0.875, 9.0, 0.8125, 20.0),
+        web_plate=WebPlate("Grade 50", 0.4375),
+        deck_thickness=8.0, deck_eff_width=108.0, fc=4.0,
+        flange_edge=2.0, flange_end=1.5, web_edge=2.0, web_end=1.75,
+    )
+    return replace(inp, **overrides)
+
+
+def _checks(component):
+    return {c.name: c for c in component.checks}
+
+
+class TestSbdhCh14Example1:
+    def setup_method(self):
+        self.d = design_splice(_sbdh_example_1())
+
+    def test_bolt_counts(self):
+        assert (self.d.top_flange.total_bolts, self.d.web.total_bolts,
+                self.d.bottom_flange.total_bolts) == (12, 26, 28)
+
+    def test_flange_design_forces_and_filler(self):
+        assert self.d.bottom_flange.design_force == pytest.approx(1162, rel=0.005)
+        assert self.d.top_flange.design_force == pytest.approx(720, rel=0.005)
+        assert self.d.bottom_flange.extra["filler_R"] == pytest.approx(0.71, abs=0.005)
+
+    def test_bottom_splice_plate_checks(self):
+        c = _checks(self.d.bottom_flange)
+        assert c["outer plate yield (tension)"].factored_capacity == pytest.approx(641, rel=0.002)
+        assert c["outer plate net-section fracture"].factored_capacity == pytest.approx(599, rel=0.002)
+        assert c["inner plate yield (tension)"].factored_capacity == pytest.approx(665, rel=0.002)
+        assert c["inner plate net-section fracture"].factored_capacity == pytest.approx(600, rel=0.002)
+        assert c["outer plate block shear"].factored_capacity == pytest.approx(1039, rel=0.002)
+        assert c["inner plate block shear"].factored_capacity == pytest.approx(1212, rel=0.002)
+
+    def test_girder_flange_block_shear_uses_controlling_side_material(self):
+        # The right (HPS 70W, 1.0 in) flange governs Mode 1: 2,532 kip.  The
+        # Mode 2 tension planes use the splice-plate edge (2.0 in) rather than
+        # the wider flange's 3.0 in, so civilpy is below the handbook's 1,818.
+        c = _checks(self.d.bottom_flange)
+        assert c["girder flange block shear (Mode 1)"].factored_capacity == pytest.approx(2532, rel=0.002)
+        assert c["girder flange block shear (Mode 2)"].factored_capacity <= 1818
+
+    def test_bearing_bolt_shear_governs(self):
+        # 4 end + 24 interior holes, filler-reduced bolt shear governs: 1,284.5 kip
+        c = _checks(self.d.bottom_flange)["girder flange bearing"]
+        assert c.factored_capacity == pytest.approx(1284.5, rel=0.005)
+        assert c.details["governing"] == "bolt shear"
+
+    def test_web(self):
+        assert self.d.web.design_force == pytest.approx(468, rel=0.002)
+        assert self.d.web.extra["hw_strength"] == 0.0
+        assert self.d.web.extra["per_row"] == 13 and self.d.web.pitch == 5.0
+        c = _checks(self.d.web)
+        assert c["web plate shear yield"].factored_capacity == pytest.approx(1142, rel=0.002)
+        assert c["web plate shear rupture"].factored_capacity == pytest.approx(1031, rel=0.002)
+        assert c["web Service II slip"].demand == pytest.approx(250.6, rel=0.002)
+        assert c["web Service II slip"].factored_capacity == pytest.approx(1014)
+
+    def test_ok(self):
+        assert self.d.ok
+
+
+class TestSbdhCh14Example2:
+    def setup_method(self):
+        self.d = design_splice(_sbdh_example_2())
+
+    def test_bolt_counts(self):
+        assert (self.d.top_flange.total_bolts, self.d.web.total_bolts,
+                self.d.bottom_flange.total_bolts) == (20, 66, 28)
+
+    def test_filler_reductions(self):
+        assert self.d.top_flange.extra["filler_R"] == pytest.approx(0.67, abs=0.005)
+        assert self.d.bottom_flange.extra["filler_R"] == pytest.approx(0.73, abs=0.006)
+
+    def test_strength_web_force(self):
+        w = self.d.web.extra
+        assert self.d.web.design_force == pytest.approx(511, rel=0.002)
+        assert w["hw_strength"] == pytest.approx(3330, rel=0.01)
+        assert w["strength_resultant"] == pytest.approx(3369, rel=0.01)
+
+    def test_flange_slip_excess_goes_to_web(self):
+        # 20 top-flange bolts cannot hold the Service II negative moment
+        # alone; the web takes Hw = 1,854 kip and its 66 bolts (2,574 kip)
+        # resist the 1,892 kip resultant, so the splice is satisfactory.
+        slip = _checks(self.d.top_flange)["top flange Service II slip"]
+        assert slip.ok is False and slip.advisory
+        w = self.d.web.extra
+        assert w["hw_service"] == pytest.approx(1854, rel=0.002)
+        assert w["slip_resultant"] == pytest.approx(1892, rel=0.002)
+        web_slip = _checks(self.d.web)["web Service II slip"]
+        assert web_slip.factored_capacity == pytest.approx(2574) and web_slip.ok
+        assert self.d.ok
+
+    def test_web_plates(self):
+        c = _checks(self.d.web)
+        assert c["web plate shear yield"].factored_capacity == pytest.approx(2626, rel=0.002)
+        assert c["web plate shear rupture"].factored_capacity == pytest.approx(1915, rel=0.002)
+
+
+# ---------------------------------------------------------------------------
+# Properties that hold for any splice.
+# ---------------------------------------------------------------------------
+
+_GRADES = ["Grade 36", "Grade 50", "Grade 50W", "HPS Grade 70W"]
+
+
+def _regraded(inp, left_grade, right_grade):
+    def side(s, g):
+        return replace(s, top_flange=replace(s.top_flange, material=g),
+                       bottom_flange=replace(s.bottom_flange, material=g))
+    return replace(inp, left=side(inp.left, left_grade), right=side(inp.right, right_grade))
+
+
+def _mirrored(inp):
+    return replace(inp, left=inp.right, right=inp.left)
+
+
+_FLANGE_CHECKS = ("girder flange block shear (Mode 1)", "girder flange block shear (Mode 2)",
+                  "girder flange bearing")
+
+
+@pytest.mark.parametrize("example", [_sbdh_example_1, _sbdh_example_2])
+@pytest.mark.parametrize("left_grade", _GRADES)
+@pytest.mark.parametrize("right_grade", _GRADES)
+def test_flange_strength_checks_do_not_depend_on_side_order(example, left_grade, right_grade):
+    # Which girder is called "left" is arbitrary: Pfy, the strength bolt
+    # counts, and the girder-flange block-shear and bearing resistances must
+    # be the same when the two sides are swapped.
+    inp = _regraded(example(), left_grade, right_grade)
+    a, b = design_splice(inp), design_splice(_mirrored(inp))
+    for fa, fb in ((a.top_flange, b.top_flange), (a.bottom_flange, b.bottom_flange)):
+        assert fa.design_force == pytest.approx(fb.design_force)
+        assert fa.strength_bolts == fb.strength_bolts
+        ca, cb = _checks(fa), _checks(fb)
+        for name in _FLANGE_CHECKS:
+            assert ca[name].factored_capacity == pytest.approx(cb[name].factored_capacity)
+
+
+@pytest.mark.parametrize("surface, duplex, k_c", [
+    ("A", False, 1.0), ("B", False, 1.0), ("C", False, 0.80),
+    ("A", True, 0.80), ("B", True, 0.80)])
+def test_slip_creep_factor_scales_service_resistance(surface, duplex, k_c):
+    # 10th Edition Kc: galvanized (Class C) and duplex-over-galvanized faying
+    # surfaces lose 20 % of the slip resistance of every slip check.
+    inp = _sbdh_example_2()
+    base = design_splice(replace(inp, bolts=replace(inp.bolts, surface_class=surface)))
+    d = design_splice(replace(inp, bolts=replace(inp.bolts, surface_class=surface,
+                                                 duplex_galvanized=duplex)))
+    for comp in (d.top_flange, d.bottom_flange):
+        assert comp.extra["pt_per"] == pytest.approx(
+            k_c * (0.5 if surface == "B" else 0.33) * 2 * 39.0)
+    if not duplex:
+        assert base.web.extra["pt_per"] == pytest.approx(d.web.extra["pt_per"])

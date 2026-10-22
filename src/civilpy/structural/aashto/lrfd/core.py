@@ -37,6 +37,9 @@ class CheckResult:
     demand: float | None = None
     phi: float = 1.0
     details: dict = field(default_factory=dict)
+    # an advisory check reports a condition (e.g. a NOTICE) without failing
+    # the design that contains it; ``ok`` still reports the raw comparison.
+    advisory: bool = False
 
     @property
     def factored_capacity(self) -> float:

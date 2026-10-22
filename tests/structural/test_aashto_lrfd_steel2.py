@@ -174,6 +174,13 @@ class TestBolts:
                                       surface_class="A")
         assert r.capacity == pytest.approx(0.85 * 0.33 * 39.0)
 
+    def test_slip_creep_factor_galvanized(self):
+        # 10th Ed. Kc = 0.80 for Class C (galvanized) and duplex-over-galvanized
+        c = lrfd.bolt_slip_resistance("A325", 0.875, surface_class="C")
+        assert c.capacity == pytest.approx(0.80 * 0.33 * 39.0)
+        d = lrfd.bolt_slip_resistance("A325", 0.875, duplex_galvanized=True)
+        assert d.capacity == pytest.approx(0.80 * 0.50 * 39.0)
+
     def test_bearing_full(self):
         # 7/8" bolt, 0.5" ply, Fu=65, clear distance 2": 2.4*0.875*0.5*65
         r = lrfd.bolt_bearing_resistance(0.875, 0.5, 65.0, clear_distance=2.0)
