@@ -7,6 +7,46 @@ Versions follow [Semantic Versioning](https://semver.org/) (major.minor.patch).
 
 ## [Unreleased]
 
+### Changed (defaults - results move)
+
+- **Storm sewer junction HGL follows OHE (`state.ohio.DOT.roadway_drainage`).**
+  `design_storm_sewer`, `hydraulic_grade_line` and `junction_hgl` default to
+  `hgl_method="ohe"`: the junction HGL is the higher of normal depth (the
+  diameter when flowing full) and `(dc + D) / 2` - ODOT's Office of
+  Hydraulic Engineering's October 2026 answer.  Travel velocity and the
+  intensity re-take are as `"cdss"`, which stays available for re-checking
+  CDSS 1.0.0.3 designs.  The junction HGL can only rise.
+
+### Added
+
+- `idf.overland_flow_chart_minutes` / `OverlandFlowChart` / `FIGURE_1101_1`:
+  the L&D Vol. 2 Figure 1101-1 overland flow nomograph, its scale geometry
+  read off the published figure (any similar chart by passing its geometry).
+  `idf.intensity_function` and `idf.idf_curve` give rainfall curves as
+  functions of duration.
+- `roadway_drainage.analyze_inlet_run`: given catch basins and inlets
+  element by element down a curbed gutter - time-of-concentration loop
+  (tc + gutter travel at 0.75 Q / A), straight / composite gutters,
+  1103.5.2 interception on grade, sags taking both sides
+  (`sag_inlet` default, pluggable).  With `InletBasin`, `CB_6` (SCD CB-6),
+  `sag_depth` (weir / transition / orifice), `ponded_spread`,
+  `capture_per_foot`, `side_capture_fraction` (optional floor),
+  `gutter_area`, `composite_gutter_area`, `gutter_travel_minutes`,
+  `GUTTER_VELOCITY_FACTOR`.
+- `design_storm_sewer`: rainfall as functions (`intensity`,
+  `check_intensity`), a size series (`sizes`), `min_d_in`,
+  `start_at_upstream_size`, crowns in place of inverts, a fixed `slope`,
+  per-run `n` and `areas`, held sizes below the minimum flagged,
+  `full_q_ratio` (Q / A full near capacity; `flowing_full`, `flow_depth`),
+  `round_output=False`; rows carry the local / total area.
+- `analyze_ditch`: rainfall as functions, any section object
+  (`CircularChannel` for round-bottomed ditches), `start_min`,
+  `max_depth_ft`, and a lining `progression` that re-runs the shear storm
+  with each rougher lining (trials in `storms["shear_trials"]`).
+- `culvert_design.first_passing`, `design_table` (D / D-1 / D-2 / D+1 and
+  F rows) and `overflow_discharge` (the flow the culvert cannot pass at the
+  overflow elevation).
+
 ## [0.5.0] - 2026-10-14
 
 ### Changed (defaults - results move)

@@ -17,7 +17,8 @@ between the zones' own 60-minute 10 % intensities).  Zone A is the lightest
 rainfall (north-east / north-west), D the heaviest (south-west).
 
 Time of concentration (1101.2.1): overland flow by the FAA equation
-(:func:`overland_flow_minutes`, sheet flow no more than 300 ft), shallow
+(:func:`overland_flow_minutes`, sheet flow no more than 300 ft) or the
+Figure 1101-1 overland flow chart (:func:`overland_flow_chart_minutes`), shallow
 concentrated flow at ``V = 3.3 k s^0.5`` (:data:`SHALLOW_K`, Table 1101-1),
 then channel / pipe travel at the Manning velocity; a 15-minute minimum to
 the first ditch catch basin and 10 minutes to the first pavement inlet
@@ -30,6 +31,8 @@ the first ditch catch basin and 10 minutes to the first pavement inlet
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
+from typing import Callable
 
 #: Figure 1101-2 constants: zone -> AEP percent -> (a, b, c).
 IDF = {
@@ -135,6 +138,85 @@ def time_of_concentration(*, overland_min: float = 0.0, shallow_min: float = 0.0
     tc = float(overland_min) + float(shallow_min) + float(channel_min)
     floor = {"ditch": MIN_TC_DITCH_MIN, "pavement": MIN_TC_PAVEMENT_MIN}.get(first_inlet or "", 0.0)
     return max(tc, floor)
+
+
+@dataclass(frozen=True)
+class OverlandFlowChart:
+    """An overland-flow nomograph of the Figure 1101-1 kind: log scales for
+    the length of slope, the percent slope and the time, a runoff-coefficient
+    scale, and a pivot line.  A straight line from L through C meets the
+    pivot line; a line from that point through S meets the time scale.
+
+    Heights are measured up the chart from the L = 10 ft tick, in any one
+    unit.  ``pivot_ratio`` is (pivot line - L scale) / (C scale - L scale)
+    and ``time_ratio`` is (time scale - pivot line) / (slope scale - pivot
+    line), both measured across the chart."""
+
+    length_per_decade: float
+    c_heights: tuple                  # ((C, height), ...) ascending in C; linear between
+    pivot_ratio: float
+    slope_height_1pct: float
+    slope_fall_per_decade: float      # the slope scale runs down as the slope grows
+    time_ratio: float
+    time_height_1min: float
+    time_per_decade: float
+
+    def c_height(self, runoff_c: float) -> float:
+        pts = sorted(self.c_heights)
+        c = float(runoff_c)
+        if not pts[0][0] - 1e-9 <= c <= pts[-1][0] + 1e-9:
+            raise ValueError(f"the chart's C scale runs {pts[0][0]} to {pts[-1][0]}, not {c}")
+        for (c0, h0), (c1, h1) in zip(pts, pts[1:]):
+            if c <= c1:
+                return h0 + (h1 - h0) * (c - c0) / (c1 - c0)
+        return pts[-1][1]
+
+    def minutes(self, runoff_c: float, length_ft: float, slope_pct: float) -> float:
+        a = self.length_per_decade * math.log10(float(length_ft) / 10.0)
+        pivot = a + (self.c_height(runoff_c) - a) * self.pivot_ratio
+        s = self.slope_height_1pct - self.slope_fall_per_decade * math.log10(float(slope_pct))
+        e = pivot + (s - pivot) * self.time_ratio
+        return 10.0 ** ((e - self.time_height_1min) / self.time_per_decade)
+
+
+#: Figure 1101-1 (January 2023 drawing of the New Jersey Highway Authority 1957 nomograph), read off the
+#: published figure: least-squares log fits of the labelled ticks of each scale and the labelled C ticks,
+#: heights in inches as printed.  The redrawn scales are not exactly logarithmic, so a reading off the chart
+#: by hand can differ from this by a few percent; the figure's own worked example (200 ft, C 0.50, about
+#: 0.2 % slope, 20 minutes) gives 20.0 minutes.
+FIGURE_1101_1 = OverlandFlowChart(
+    length_per_decade=2.622,
+    c_heights=((0.15, 2.244), (0.30, 2.625), (0.50, 3.006), (0.65, 3.423), (0.90, 4.360)),
+    pivot_ratio=1.902,
+    slope_height_1pct=2.603, slope_fall_per_decade=0.688,
+    time_ratio=1.943,
+    time_height_1min=-5.224, time_per_decade=6.709,
+)
+
+
+def overland_flow_chart_minutes(runoff_c: float, length_ft: float, slope_pct: float, *,
+                                chart: OverlandFlowChart = FIGURE_1101_1) -> float:
+    """Overland flow time (min) from the Figure 1101-1 overland flow chart
+    (1101.2.1 allows it, a similar chart, or :func:`overland_flow_minutes`).
+    ``slope_pct`` in percent; C on the chart's 0.15-0.90 scale.  Pass another
+    ``chart`` for a similar nomograph with its own scale geometry."""
+    if float(length_ft) <= 0 or float(slope_pct) <= 0:
+        return 0.0
+    return chart.minutes(runoff_c, length_ft, slope_pct)
+
+
+def idf_curve(a: float, b: float, c: float) -> Callable[[float], float]:
+    """``t -> a / (t + b)^c`` (in/hr, t in minutes) - the form of the
+    Figure 1101-2 curves - for curves the figure does not carry (a local
+    curve approved by OHE, 1101.2.3).  No duration clamp."""
+    return lambda t: a / (float(t) + b) ** c
+
+
+def intensity_function(zone: str, aep_pct: float) -> Callable[[float], float]:
+    """``t -> intensity(t, aep_pct, zone)``: one Figure 1101-2 curve as a
+    function of duration, the shape the drainage analyzers take."""
+    IDF[zone.strip().upper()][_aep_key(aep_pct)]          # fail now on a bad zone / AEP
+    return lambda t: intensity(t, aep_pct, zone)
 
 
 def weighted_c(areas: list) -> float:

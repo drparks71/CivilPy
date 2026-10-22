@@ -336,10 +336,11 @@ def test_branched_storm_sewer_accumulates_through_the_network(zone, tailwater):
         assert x["travel_min"] == pytest.approx(x["length_ft"] / 60.0 / v, abs=0.02)
 
 
+@pytest.mark.parametrize("method", ["ohe", "cdss"])
 @pytest.mark.parametrize("zone", ["A", "C"])
 @pytest.mark.parametrize("tailwater", [None, 109.5, 112.0])
-def test_cdss_hgl_rules_hold_on_every_run(zone, tailwater):
-    d = rd.design_storm_sewer(_tree(), zone=zone, tailwater_ft=tailwater)
+def test_hgl_rules_hold_on_every_run(zone, tailwater, method):
+    d = rd.design_storm_sewer(_tree(), zone=zone, tailwater_ft=tailwater, hgl_method=method)
     rows = {x["name"]: x for x in d["runs"]}
     hgl = {h["name"]: h for h in d["hgl"]["runs"]}
     assert [h["name"] for h in d["hgl"]["runs"]][0] == "D" and set(hgl) == set(rows)
@@ -352,6 +353,8 @@ def test_cdss_hgl_rules_hold_on_every_run(zone, tailwater):
         assert h["hgl_down_ft"] >= down - 1e-3                          # never below the junction
         q = h["q_check_cfs"]
         own = x["invert_down_ft"] + 0.5 * (rd.critical_depth_circular(q, x["d_in"]) + x["d_in"] / 12.0)
+        if method == "ohe":                                              # OHE Q18: the higher of yn and (dc + D) / 2
+            own = max(own, x["invert_down_ft"] + rd.flow_depth(q, x["d_in"], x["slope"], x["n"]))
         assert h["hgl_down_ft"] == pytest.approx(max(down, own), abs=2e-3)
         assert q == pytest.approx(x["ca_acres"] * h["intensity_in_hr"], rel=2e-3)
         if h["repositioned"] and h["name"] != "D":
@@ -386,7 +389,9 @@ def test_cdss_junction_rule_ignores_normal_depth():
     half = 0.5 * (rd.critical_depth_circular(q, d_in) + 3.5)
     assert yn is not None and yn > half
     junction = 100.0 + 0.5 * (yn + half)
-    cdss = rd.junction_hgl(downstream_hgl_ft=junction, invert_down_ft=100.0, d_in=d_in, q_cfs=q, slope=slope)
+    cdss = rd.junction_hgl(downstream_hgl_ft=junction, invert_down_ft=100.0, d_in=d_in, q_cfs=q, slope=slope, method="cdss")
+    ohe = rd.junction_hgl(downstream_hgl_ft=junction, invert_down_ft=100.0, d_in=d_in, q_cfs=q, slope=slope)
+    assert ohe["hgl_ft"] == pytest.approx(100.0 + yn) and ohe["repositioned"]       # the default takes yn (OHE Q18)
     simple = rd.junction_hgl(downstream_hgl_ft=junction, invert_down_ft=100.0, d_in=d_in, q_cfs=q, slope=slope, method="single_intensity")
     assert cdss["hgl_ft"] == junction and not cdss["repositioned"]
     assert simple["hgl_ft"] == pytest.approx(100.0 + yn) and simple["repositioned"]
@@ -396,11 +401,13 @@ def test_cdss_junction_rule_uses_half_dc_plus_d_when_over_capacity():
     # over capacity: no normal depth; CDSS takes (dc + D) / 2, the single-intensity rule the crown
     q, d_in, slope = 30.0, 24, 0.002
     assert rd.normal_depth_circular(q, d_in, slope) is None
-    low = rd.junction_hgl(downstream_hgl_ft=0.0, invert_down_ft=100.0, d_in=d_in, q_cfs=q, slope=slope)
+    low = rd.junction_hgl(downstream_hgl_ft=0.0, invert_down_ft=100.0, d_in=d_in, q_cfs=q, slope=slope, method="cdss")
+    ohe = rd.junction_hgl(downstream_hgl_ft=0.0, invert_down_ft=100.0, d_in=d_in, q_cfs=q, slope=slope)
+    assert ohe["hgl_ft"] == pytest.approx(102.0)                   # flowing full: D governs over (dc + D) / 2
     crown = rd.junction_hgl(downstream_hgl_ft=0.0, invert_down_ft=100.0, d_in=d_in, q_cfs=q, slope=slope, method="single_intensity")
     assert low["hgl_ft"] == pytest.approx(100.0 + 0.5 * (rd.critical_depth_circular(q, d_in) + 2.0))
     assert crown["hgl_ft"] == pytest.approx(102.0) and low["repositioned"] and crown["repositioned"]
-    held = rd.junction_hgl(downstream_hgl_ft=105.0, invert_down_ft=100.0, d_in=d_in, q_cfs=q, slope=slope)
+    held = rd.junction_hgl(downstream_hgl_ft=105.0, invert_down_ft=100.0, d_in=d_in, q_cfs=q, slope=slope, method="cdss")
     assert held["hgl_ft"] == 105.0 and not held["repositioned"]
 
 

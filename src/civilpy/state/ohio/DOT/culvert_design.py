@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from typing import Callable
 
 from civilpy.water_resources import culvert as cv
 
@@ -185,3 +186,56 @@ def size_culvert(*, q_design_cfs: float, q_check_1pct_cfs: float | None, inlet_i
         notes.append("tailwater (dc + D) / 2 (1105.6.1 high-tailwater rule)")
     return {"selected": selected, "per_family": per_family, "tried": tried, "basis": "1105.1 / 1006.2.1 / 1006.2.2",
             "edition": ld2.LD2_EDITION, "notes": notes}
+
+
+# ── the design table and the overflow quantity ────────────────────────────
+
+#: ODOT's culvert design table (kept by OHE, October 2026): the design size, one and two sizes smaller and one
+#: larger, at the design discharge (D rows) and again at the flood discharge (F rows).
+DESIGN_TABLE_OFFSETS = ((0, ""), (-1, "-1"), (-2, "-2"), (1, "+1"))
+
+
+def first_passing(n_sizes: int, passes: Callable[[int, int], bool], *, barrels=(1, 2)) -> tuple | None:
+    """The first ``(size index, barrels)`` for which ``passes(index, barrels)``
+    - every size with one barrel before any with two (1105.6.2) - or None."""
+    for b in barrels:
+        for k in range(n_sizes):
+            if passes(k, b):
+                return k, b
+    return None
+
+
+def design_table(n_sizes: int, chosen: int, evaluate: Callable[[int, float], dict], *, q_design_cfs: float,
+                 q_flood_cfs: float | None = None) -> list:
+    """The rows of the design table around the ``chosen`` size index:
+    D, D-1, D-2, D+1 at ``q_design_cfs`` and F, F-1, F-2, F+1 at
+    ``q_flood_cfs`` (rows off either end of the size list are left out).
+    ``evaluate(size_index, q)`` returns each row's results."""
+    rows = []
+    for tag, q in (("D", q_design_cfs), ("F", q_flood_cfs)):
+        if not q or q <= 0:
+            continue
+        for off, suffix in DESIGN_TABLE_OFFSETS:
+            j = chosen + off
+            if 0 <= j < n_sizes:
+                rows.append({"code": tag + suffix, "size_index": j, "q_cfs": q, **evaluate(j, q)})
+    return rows
+
+
+def overflow_discharge(headwater: Callable[[float], float], q_cfs: float, overflow_elev_ft: float, *,
+                       tol_cfs: float = 0.01) -> float:
+    """The flow over the road: Q less the discharge at which the culvert's
+    headwater reaches the overflow elevation (``headwater(q) -> elevation``).
+    ODOT reports this quantity rather than modelling the overtopping flow
+    (OHE, October 2026); :func:`civilpy.water_resources.culvert.crossing`
+    splits culvert and weir flow when that is wanted."""
+    if q_cfs <= 0 or headwater(q_cfs) <= overflow_elev_ft:
+        return 0.0
+    lo, hi = 0.0, q_cfs
+    while hi - lo >= tol_cfs:
+        mid = 0.5 * (lo + hi)
+        if headwater(mid) > overflow_elev_ft:
+            hi = mid
+        else:
+            lo = mid
+    return q_cfs - lo
