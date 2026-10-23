@@ -195,7 +195,7 @@ def test_corrected_ratings_of_the_example():
 
 
 def test_fastener_resistances():
-    b = bolt_shear_resistance(0.875, 120.0)                 # 7th Ed. C = 0.48
+    b = bolt_shear_resistance(0.875, 120.0, design_year=2014)   # 7th Ed. C = 0.48
     assert b.capacity == pytest.approx(34.62, abs=0.02)     # example: Ab = 0.601
     assert b.factored_capacity == pytest.approx(27.69, abs=0.02)
     br = bolt_bearing_resistance(0.875, 0.4, 60.0, clear_distance=1.25)
@@ -210,7 +210,7 @@ def test_plate_development_and_rivet_removal():
     plate = tension_member_resistance(a_g=0.625 * 12, f_y=50, a_n=0.625 * w_n, f_u=65)
     assert plate.details["yield"] == pytest.approx(356.25)
     assert plate.capacity == pytest.approx(286.0)
-    bolt = bolt_shear_resistance(0.875, 120.0).factored_capacity
+    bolt = bolt_shear_resistance(0.875, 120.0, design_year=2014).factored_capacity
     assert plate.capacity / bolt == pytest.approx(10.3, abs=0.05)     # example: "say 10"
     assert fasteners_to_develop(plate.capacity, bolt) == 11
     comp_plate = 0.9 * 3.0 * 50

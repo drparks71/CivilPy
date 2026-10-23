@@ -152,17 +152,19 @@ class TestMembers:
 
 class TestBolts:
     def test_shear_threads_excluded(self):
-        # 7/8" A325 X: 0.48*0.6013*120 = 34.6 kip
+        # 7/8" A325 X: 0.56*0.6013*120 = 40.4 kip (8th Ed. on); 0.48 before 2017
         r = lrfd.bolt_shear_resistance(d_bolt=0.875, f_ub=120.0)
         a_b = math.pi * 0.875**2 / 4.0
-        assert r.capacity == pytest.approx(0.48 * a_b * 120.0)
+        assert r.capacity == pytest.approx(0.56 * a_b * 120.0)
         assert r.phi == 0.80
+        old = lrfd.bolt_shear_resistance(d_bolt=0.875, f_ub=120.0, design_year=2014)
+        assert old.capacity == pytest.approx(0.48 * a_b * 120.0)
 
     def test_shear_threads_included_lower(self):
         x = lrfd.bolt_shear_resistance(d_bolt=0.875, f_ub=120.0)
         n = lrfd.bolt_shear_resistance(d_bolt=0.875, f_ub=120.0,
                                        threads_excluded=False)
-        assert n.capacity == pytest.approx(x.capacity * 0.38 / 0.48)
+        assert n.capacity == pytest.approx(x.capacity * 0.45 / 0.56)
 
     def test_slip_class_b_standard(self):
         # 7/8" A325, Class B, standard holes: 1.0*0.5*1*39 = 19.5 kip

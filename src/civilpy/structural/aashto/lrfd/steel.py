@@ -606,10 +606,10 @@ def bolt_shear_resistance(
     0.83 reduction.  phi_s = 0.80.
 
     The shear-strength coefficient C was raised in the 8th Edition (2017):
-    ``design_year`` >= 2017 uses C = 0.56 (threads excluded) / 0.45 (threads
-    included); earlier editions (the default) use 0.48 / 0.38."""
+    the current value (default) is C = 0.56 (threads excluded) / 0.45
+    (threads included); ``design_year`` before 2017 gives 0.48 / 0.38."""
     a_b = math.pi * d_bolt**2 / 4.0
-    if design_year is not None and design_year >= 2017:
+    if design_year is None or design_year >= 2017:
         factor = 0.56 if threads_excluded else 0.45
     else:
         factor = 0.48 if threads_excluded else 0.38

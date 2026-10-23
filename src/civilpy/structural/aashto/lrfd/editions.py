@@ -28,6 +28,7 @@ Year       Article (current num.)  Change
 2015       5.4.2.3                 ktd time-development factor revised
 2015       6.9.4.1.1               phi_c for steel columns 0.90 -> 0.95
 2016       5.9.2.3.1a              transfer compression 0.60 -> 0.65 f'ci
+2017       6.13.2.7                bolt shear C 0.48 / 0.38 -> 0.56 / 0.45
 2024       6.10.8.2.3a             Lp 1.0 -> 1.1 rt sqrt(E/Fyc); LTB
                                    Fyr 0.5 Fyc welded / 0.7 Fyc rolled
 2024       6.10.6.2.3              lambda_rw 5.7 -> c_rw sqrt(E/Fyc),

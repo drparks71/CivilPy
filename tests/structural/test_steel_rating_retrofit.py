@@ -163,7 +163,7 @@ def test_the_examples_net_flange_modulus_skips_the_section_loss():
 
 
 def test_bolted_connections_of_the_shear_strengthening():
-    bolt = bolt_shear_resistance(0.875, 120.0, n_planes=2)
+    bolt = bolt_shear_resistance(0.875, 120.0, n_planes=2, design_year=2014)   # 7th Ed. C 0.48
     assert bolt.factored_capacity == pytest.approx(55.40, abs=0.05)
     assert effective_net_width(15.0, 1.0, 2) == pytest.approx(12.75)         # 0.85 Wg governs
     assert effective_net_width(5.625, 1.0, 1) == pytest.approx(4.625)

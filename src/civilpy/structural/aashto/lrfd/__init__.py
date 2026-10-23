@@ -142,6 +142,8 @@ from civilpy.structural.aashto.lrfd.appendix_b6 import (
     b6_bracing_limit,
     b6_effective_plastic_moment,
     b6_redistribution_moment,
+    b6_rotation_limit,
+    b6_refined_effective_moment,
 )
 from civilpy.structural.aashto.lrfd.appendix_d6 import (
     PlasticMomentResult,

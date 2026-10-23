@@ -18,7 +18,8 @@ from __future__ import annotations
 import math
 
 from civilpy.structural.aashto.lrfd.core import CheckResult, article
-from civilpy.structural.aashto.lrfd.steel import E_STEEL, PHI_F
+from civilpy.structural.aashto.lrfd.steel import (
+    E_STEEL, PHI_F, _fyr_ltb, _lp_coefficient, _tenth_edition, web_slenderness_limit)
 
 
 def st_venant_j(
@@ -52,15 +53,20 @@ def web_plastification_factors(
     m_yt: float,
     f_yc: float,
     r_h: float = 1.0,
+    b_fc: float | None = None,
+    t_fc: float | None = None,
+    design_year: int | None = None,
 ) -> CheckResult:
     """Web plastification factors Rpc and Rpt (A6.2).
 
     Compact webs (2*Dcp/tw within lambda_pw(Dcp), A6.2.1) reach the full
     plastic moment: Rpc = Mp/Myc, Rpt = Mp/Myt.  Noncompact webs (A6.2.2)
     interpolate between Rh and Mp/My.  ``d_c``/``d_cp`` are the elastic and
-    plastic depths of web in compression (in).  ``capacity`` holds Rpc;
-    Rpt and the slenderness parameters are in ``details``."""
-    lam_rw = 5.7 * math.sqrt(E_STEEL / f_yc)
+    plastic depths of web in compression (in).  lambda_rw is c_rw
+    sqrt(E/Fyc) (Eq. A6.1-3, 10th Ed.) when the compression flange
+    ``b_fc`` x ``t_fc`` is given, else 5.7 sqrt(E/Fyc).  ``capacity`` holds
+    Rpc; Rpt and the slenderness parameters are in ``details``."""
+    lam_rw = web_slenderness_limit(d_c, t_w, b_fc, t_fc, f_yc, design_year)
     lam_pw_dcp = min(
         math.sqrt(E_STEEL / f_yc)
         / (0.54 * m_p / (r_h * m_yc) - 0.09) ** 2,
@@ -154,21 +160,32 @@ def a6_lateral_torsional_buckling(
     c_b: float = 1.0,
     m_u: float | None = None,
     r_h: float = 1.0,
+    welded: bool = True,
+    s_xc_elastic: float | None = None,
+    design_year: int | None = None,
 ) -> CheckResult:
     """Lateral torsional buckling resistance Mnc in moment format (A6.3.3),
     which credits the St. Venant stiffness J that 6.10.8.2.3 neglects.
 
     ``r_t`` is the effective radius of gyration (in), ``j_torsion`` from
     :func:`st_venant_j`, ``h_depth`` the distance between flange centroids
-    (in)."""
-    f_yr = _fyr_a6(f_yc, f_yw, f_yt, s_xt, s_xc, r_h)
-    l_p = 1.0 * r_t * math.sqrt(E_STEEL / f_yc)  # A6.3.3-4
-    ratio = f_yr / E_STEEL * s_xc * h_depth / j_torsion
+    (in).  ``s_xc`` is Myc / Fyc; ``s_xc_elastic`` the elastic section
+    modulus to the compression flange, which Eq. A6.3.3.1-5 (Lr) uses in the
+    10th Ed. (defaults to ``s_xc``).  10th Ed.: Lp = 1.1 rt sqrt(E/Fyc),
+    Fyr = 0.5 Fyc welded / 0.7 Fyc rolled; ``design_year`` before 2024:
+    1.0 rt sqrt(E/Fyc) and Fyr = min(0.7 Fyc, Rh Fyt Sxt/Sxc, Fyw)."""
+    if _tenth_edition(design_year):
+        f_yr = _fyr_ltb(f_yc, f_yw, welded, False, design_year)
+    else:
+        f_yr = _fyr_a6(f_yc, f_yw, f_yt, s_xt, s_xc, r_h)
+    l_p = _lp_coefficient(design_year) * r_t * math.sqrt(E_STEEL / f_yc)  # A6.3.3.1-4
+    s_lr = s_xc_elastic if s_xc_elastic is not None else s_xc
+    ratio = f_yr / E_STEEL * s_lr * h_depth / j_torsion
     l_r = (
         1.95 * r_t * E_STEEL / f_yr
-        * math.sqrt(j_torsion / (s_xc * h_depth))
+        * math.sqrt(j_torsion / (s_lr * h_depth))
         * math.sqrt(1.0 + math.sqrt(1.0 + 6.76 * ratio**2))
-    )  # A6.3.3-5
+    )  # A6.3.3.1-5
     m_max = r_pc * m_yc
     if l_b <= l_p:
         m_nc = m_max
