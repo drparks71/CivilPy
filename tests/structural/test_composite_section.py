@@ -101,10 +101,10 @@ class TestDesignRolledSplice:
             top_flange_rows=2, bottom_flange_rows=2, web_rows=4,
             bolt_spacing=3.0, flange_edge=1.5, flange_end=1.5,
             web_edge=1.5, web_end=1.5, design_year=2016)
-        # Low-stress floor times effective net flange area.
-        net_area = (12.8 - 2 * 1.0) * 0.75
-        force = 37.5 * (0.8 / 0.95) * (65 / 50) * net_area
-        assert d.top_flange.design_force == pytest.approx(force)
+        # Low-stress floor; the top flange is in compression under positive
+        # moment, so its design area is the gross area (pre-8th Ed.
+        # 6.13.6.1.4c), not the effective net area.
+        assert d.top_flange.design_force == pytest.approx(37.5 * 12.8 * 0.75)
         assert d.top_flange.total_bolts == 10
         assert d.bottom_flange.total_bolts == 10
         assert d.ok

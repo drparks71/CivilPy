@@ -180,24 +180,40 @@ class CompositeGirder:
             s += short_term.stress(moments["ll_pos"], y)
         return s
 
+    def _strength_moments(self, loads: "SpliceLoads", positive: bool) -> dict:
+        # gamma_p at its maximum or minimum to *maximize* the effect in the
+        # checked direction (AASHTO 3.4.1, Table 3.4.1-2), as _factor_loads.
+        want = 1.0 if positive else -1.0
+        dc = loads.dc1_m + loads.dc2_m
+        g_dc = 1.25 if dc * want >= 0 else 0.90
+        g_dw = 1.50 if loads.dw_m * want >= 0 else 0.65
+        m = {"dc1": g_dc * loads.dc1_m, "dc2": g_dc * loads.dc2_m,
+             "dw": g_dw * loads.dw_m}
+        m["ll_pos" if positive else "ll_neg"] = 1.75 * (
+            loads.ll_pos_m if positive else loads.ll_neg_m)
+        return m
+
     def flange_fcf(self, flange: str, loads: "SpliceLoads", *,
                    holes: bool = False) -> float:
         """Governing factored flange stress ``fcf`` (ksi, magnitude) for the
         Strength I positive and negative cases, from the unfactored
-        :class:`SpliceLoads`.  The permanent-load factor ``gamma_p`` takes its
-        maximum or minimum to *maximize* the stress in the checked direction
-        (AASHTO 3.4.1, Table 3.4.1-2), matching ``_factor_loads``."""
-        def case(positive: bool) -> float:
-            want = 1.0 if positive else -1.0
-            dc = loads.dc1_m + loads.dc2_m
-            g_dc = 1.25 if dc * want >= 0 else 0.90
-            g_dw = 1.50 if loads.dw_m * want >= 0 else 0.65
-            m = {"dc1": g_dc * loads.dc1_m, "dc2": g_dc * loads.dc2_m,
-                 "dw": g_dw * loads.dw_m}
-            m["ll_pos" if positive else "ll_neg"] = 1.75 * (
-                loads.ll_pos_m if positive else loads.ll_neg_m)
-            return self.flange_stress(flange, m, holes=holes)
-        return max(abs(case(True)), abs(case(False)))
+        :class:`SpliceLoads`."""
+        return max(abs(self.flange_stress(
+            flange, self._strength_moments(loads, positive), holes=holes))
+            for positive in (True, False))
+
+    def stress_cases(self, loads: "SpliceLoads", *,
+                     holes: bool = False) -> tuple:
+        """Concurrent ``(top, bottom)`` factored Strength I flange stresses
+        (ksi, tension positive) for the positive and negative live-load
+        cases -- the ``stress_cases`` input of the pre-8th-Edition splice
+        design-stress method."""
+        out = []
+        for positive in (True, False):
+            m = self._strength_moments(loads, positive)
+            out.append((self.flange_stress("top", m, holes=holes),
+                        self.flange_stress("bottom", m, holes=holes)))
+        return tuple(out)
 
 
 def design_rolled_splice(left_label: str, right_label: str, loads: "SpliceLoads",
@@ -207,9 +223,10 @@ def design_rolled_splice(left_label: str, right_label: str, loads: "SpliceLoads"
                          n: float | None = None, **splice_kwargs):
     """End-to-end rolled-shape composite field-splice design (G7 + B4).
 
-    Builds both :class:`GirderSide`\\ s from AISC labels, computes the composite
-    flange design stresses ``fcf`` from the deck section (so **no MDX-supplied
-    stress is needed**), and runs :func:`design_splice` with
+    Builds both :class:`GirderSide`\\ s from AISC labels, computes the
+    concurrent flange stresses for each Strength I case from the composite
+    deck section (so **no MDX-supplied stress is needed**), and runs
+    :func:`design_splice` with
     ``method="stress_based"``.  Extra ``design_splice`` inputs (``bolts``,
     ``top_plates``/``bottom_plates``, ``web_plate``, ``*_rows``, spacing,
     ``design_year`` …) pass through ``splice_kwargs``.
@@ -228,7 +245,6 @@ def design_rolled_splice(left_label: str, right_label: str, loads: "SpliceLoads"
         left=left, right=right, loads=loads,
         deck_composite=True, deck_thickness=deck_thickness,
         deck_eff_width=deck_eff_width, fc=deck_fc, method="stress_based",
-        fcf_top=cg.flange_fcf("top", loads),
-        fcf_bot=cg.flange_fcf("bottom", loads),
+        stress_cases=cg.stress_cases(loads),
         **splice_kwargs)
     return design_splice(inp)

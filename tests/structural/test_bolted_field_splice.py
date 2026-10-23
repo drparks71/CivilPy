@@ -620,3 +620,95 @@ def test_slip_creep_factor_scales_service_resistance(surface, duplex, k_c):
             k_c * (0.5 if surface == "B" else 0.33) * 2 * 39.0)
     if not duplex:
         assert base.web.extra["pt_per"] == pytest.approx(d.web.extra["pt_per"])
+
+
+# ---------------------------------------------------------------------------
+# FHWA LRFD Steel Girder Superstructure Design Example, Design Step 4 (bolted
+# field splice; AASHTO LRFD through the 2002 interims).  Checks the
+# pre-8th-Edition design-stress method (method="stress_based") with the
+# example's concurrent Strength I flange stresses (its Table 4-12, tension
+# positive).  The example designs only the bottom flange and web; its web
+# uses the pre-8th-Edition elastic method, which this module does not
+# implement, so only the flange results are compared.
+# ---------------------------------------------------------------------------
+
+def _fhwa_ds4():
+    g = "Grade 50"
+    return design_splice(SpliceInput(
+        left=GirderSide(Flange(g, 0.625, 14), Flange(g, 0.875, 14), g, 0.5, 54,
+                        haunch=3.5, stiffened=False),
+        right=GirderSide(Flange(g, 1.25, 14), Flange(g, 1.375, 14), g, 0.5, 54,
+                         haunch=3.5, stiffened=False),
+        loads=SpliceLoads(dc1_m=-51.8, dc2_m=15.5, dw_m=18.8, ll_pos_m=1307.8,
+                          ll_neg_m=-953.3, dc1_v=-60.8, dc2_v=-8.7, dw_v=-10.6,
+                          ll_pos_v=14.5, ll_neg_v=-91.1),
+        bolts=BoltSpec("A325", 0.875, flange_threads_excluded=True,
+                       web_threads_excluded=True),
+        top_plates=PlatePair(g, 0.5, 6, 0.4375, 14),
+        bottom_plates=PlatePair(g, 0.5, 6, 0.4375, 14),
+        web_plate=WebPlate(g, 0.3125), deck_thickness=8.0, deck_eff_width=103.0,
+        flange_edge=1.5, flange_end=1.5, web_edge=1.5, web_end=1.5,
+        bolt_spacing=3.0, girder_gap=0.375, design_year=2002,
+        method="stress_based",
+        stress_cases=((-0.93, 23.48), (14.13, -19.54))))
+
+
+class TestFhwaDesignStep4:
+    def setup_method(self):
+        self.d = _fhwa_ds4()
+
+    def test_bottom_flange_forces(self):
+        # Controlling flange both cases; Fcf = 37.5 ksi (0.75 Fy floor).
+        # Tension (+LL) on Ae = 9.58 in2: 359.25 kip; compression (-LL) on
+        # Ag = 12.25 in2: 459.38 kip, which governs the bolts.
+        bf = self.d.bottom_flange
+        assert bf.extra["P_tension"] == pytest.approx(359.25, rel=0.001)
+        assert bf.extra["P_compression"] == pytest.approx(459.38, rel=0.001)
+        assert bf.design_force == pytest.approx(459.38, rel=0.001)
+
+    def test_top_flange_noncontrolling_forces(self):
+        # Fncf = max(Rcf |fncf|, 0.75 Fy) = 37.5 ksi: +LL compression on
+        # Ag = 8.75 in2 (328.13 kip), -LL tension on Ae = 6.84 in2 (256.50).
+        tf = self.d.top_flange
+        assert tf.extra["P_compression"] == pytest.approx(328.13, rel=0.001)
+        assert tf.extra["P_tension"] == pytest.approx(256.50, rel=0.002)
+        assert tf.design_force == pytest.approx(328.13, rel=0.001)
+
+    def test_bolts_and_filler(self):
+        bf = self.d.bottom_flange
+        assert bf.extra["filler_R"] == pytest.approx(0.73, abs=0.005)
+        assert bf.total_bolts == 12 and bf.bolt_rows == 4
+
+    def test_splice_plates(self):
+        c = _checks(self.d.bottom_flange)
+        assert c["outer plate yield (tension)"].factored_capacity == pytest.approx(290.94, rel=0.001)
+        assert c["inner plate yield (tension)"].factored_capacity == pytest.approx(285.00, rel=0.001)
+        assert c["outer plate net-section fracture"].factored_capacity == pytest.approx(227.50, rel=0.001)
+        assert c["inner plate net-section fracture"].factored_capacity == pytest.approx(208.00, rel=0.001)
+        assert c["outer plate yield (tension)"].demand == pytest.approx(359.25 / 2, rel=0.001)
+        assert c["outer plate yield (compression)"].factored_capacity == pytest.approx(275.63, rel=0.001)
+        assert c["inner plate yield (compression)"].factored_capacity == pytest.approx(270.00, rel=0.001)
+        assert c["outer plate yield (compression)"].demand == pytest.approx(459.38 / 2, rel=0.001)
+        failed = [k.name for k in self.d.bottom_flange.checks if k.ok is False]
+        assert failed == []
+
+
+@pytest.mark.parametrize("f_top, f_bot", [
+    (-0.93, 23.48), (14.13, -19.54), (-30.0, 45.0), (40.0, -38.0), (-49.0, 10.0)])
+def test_stress_based_forces_follow_6_13_6_1_4c(f_top, f_bot):
+    # For any concurrent pair: the flange with the larger |f|/Fy gets Fcf,
+    # the other Fncf = Rcf*|f| (both >= 0.75 Fy); Ae in tension, Ag in
+    # compression; the design force is never below the 0.75 Fy floor.
+    from civilpy.structural.aashto.lrfd.splices import stress_based_flange_design_forces
+    a_e, a_g, fy = {"top": 7.0, "bottom": 9.5}, {"top": 8.75, "bottom": 12.25}, {"top": 50.0, "bottom": 50.0}
+    out = stress_based_flange_design_forces([(f_top, f_bot)], a_e, a_g, fy)
+    f = {"top": f_top, "bottom": f_bot}
+    ctrl = "top" if abs(f_top) > abs(f_bot) else "bottom"
+    other = "bottom" if ctrl == "top" else "top"
+    f_cf = max((abs(f[ctrl]) + 50.0) / 2, 37.5)
+    f_ncf = max(f_cf / abs(f[ctrl]) * abs(f[other]), 37.5)
+    for k, stress in ((ctrl, f_cf), (other, f_ncf)):
+        area = a_e[k] if f[k] > 0 else a_g[k]
+        assert out[k] == pytest.approx(stress * area)
+        assert out[k] >= 37.5 * min(a_e[k], a_g[k])
+    assert out["cases"][0]["controlling"] == ctrl

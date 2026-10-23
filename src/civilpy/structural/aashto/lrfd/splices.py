@@ -76,6 +76,60 @@ def flange_design_stress_fcf(
     return max(computed, floor)
 
 
+@article("6.13.6.1.4c", "Flange Splice Design Forces (pre-8th Edition)")
+def stress_based_flange_design_forces(
+    cases,
+    a_e: dict,
+    a_g: dict,
+    f_yf: dict,
+    r_h: float = 1.0,
+    alpha: float = 1.0,
+    phi_f: float = 1.0,
+) -> dict:
+    """Flange splice design forces by the pre-8th-Edition design-stress
+    method (6.13.6.1.4c through the 7th Edition).
+
+    ``cases`` is an iterable of concurrent ``(f_top, f_bottom)`` factored
+    Strength I stresses (ksi) at the flange mid-thicknesses, tension
+    positive, one pair per load case.  ``a_e``, ``a_g`` and ``f_yf`` are
+    keyed ``"top"``/``"bottom"`` and hold the smaller effective and gross
+    areas and the flange yield strength of the two sides of the splice.
+
+    In each case the controlling flange is the one with the larger ratio of
+    stress to factored flexural resistance; it is designed for
+    ``Fcf = max((|fcf|/Rh + alpha*phi_f*Fyf)/2, 0.75*alpha*phi_f*Fyf)``.  The
+    other flange is designed for ``Fncf = max(Rcf*|fncf|/Rh,
+    0.75*alpha*phi_f*Fyf)`` with ``Rcf = |Fcf/fcf|``.  A flange in tension
+    uses Ae, one in compression Ag.  Each flange's design force is the
+    largest over the cases.  Returns ``{"top": P, "bottom": P,
+    "tension": {...}, "compression": {...}, "cases": [...]}`` (kip): the
+    governing force per flange plus its largest tension and compression
+    forces, which the splice-plate tension and compression checks use."""
+    out = {"top": 0.0, "bottom": 0.0, "cases": [],
+           "tension": {"top": 0.0, "bottom": 0.0},
+           "compression": {"top": 0.0, "bottom": 0.0}}
+    for f_top, f_bot in cases:
+        f = {"top": f_top, "bottom": f_bot}
+        ctrl = max(f, key=lambda k: abs(f[k]) / (alpha * phi_f * f_yf[k]))
+        nctrl = "bottom" if ctrl == "top" else "top"
+        floor = {k: 0.75 * alpha * phi_f * f_yf[k] for k in f}
+        f_cf = flange_design_stress_fcf(f[ctrl], f_yf[ctrl], r_h=r_h,
+                                        alpha=alpha, phi_f=phi_f)
+        r_cf = abs(f_cf / f[ctrl]) if f[ctrl] else 1.0
+        f_ncf = max(r_cf * abs(f[nctrl]) / r_h, floor[nctrl])
+        design = {ctrl: f_cf, nctrl: f_ncf}
+        row = {"controlling": ctrl, "Rcf": r_cf}
+        for k in f:
+            area = a_e[k] if f[k] > 0 else a_g[k]
+            force = design[k] * area
+            row[k] = {"f": f[k], "F": design[k], "area": area, "P": force}
+            out[k] = max(out[k], force)
+            sense = "tension" if f[k] > 0 else "compression"
+            out[sense][k] = max(out[sense][k], force)
+        out["cases"].append(row)
+    return out
+
+
 @dataclass
 class WebSpliceForces:
     """Design forces for a web splice (6.13.6.1.3c): the vertical design

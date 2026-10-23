@@ -24,8 +24,10 @@ advance implementation of the 11th-Edition slab-strength rule (positive
 flexure: when 0.85 f'c beff ts < Pfy + Hw the section is treated as
 non-composite and Hw acts on D/4) and its single-shear-plane apportioning
 of Pfy when the inner and outer plate areas differ by more than 10 %.
-``method="stress_based"`` is the pre-9th-Edition design-stress method
-(Fcf with the 0.75 Fy floor).  The bolt shear coefficient is the 8th-Edition
+``method="stress_based"`` is the pre-8th-Edition design-stress method
+(6.13.6.1.4c: Fcf / Fncf with the 0.75 Fy floor from the concurrent
+``stress_cases``, Ae in tension and Ag in compression), validated for the
+flanges against FHWA's LRFD steel girder design example, Design Step 4.  The bolt shear coefficient is the 8th-Edition
 value (0.56/0.45) via ``design_year``.  Validated against the four v4.01
 example workbooks and the NSBA Steel Bridge Design Handbook Ch. 14 (Dec 2025)
 Design Examples 1 and 2 (tests/structural/test_bolted_field_splice.py).
@@ -312,13 +314,19 @@ class SpliceInput:
     # "nsba" (default): design each flange for its full yield capacity
     # (Fcf = Fyf) with the total force in the plates' shear planes -- the
     # conservative method the two plate-girder validation designs use.
-    # "stress_based": the pre-9th-edition (<= 8th ed. 6.13.6.1.4c) method --
-    # design stress Fcf from the actual factored flange stress
-    # (fcf_top/fcf_bot) with the 0.75*alpha*phi_f*Fyf floor, the 6.8.3
-    # net-area hole (nominal + 1/16), and per-plate single-shear bolt counts.
-    # "odot_bdm" is accepted as a deprecated alias of "stress_based".
+    # "stress_based": the pre-8th-edition (6.13.6.1.4c) method -- design
+    # stresses Fcf (controlling flange) and Fncf = Rcf*|fncf| (noncontrolling)
+    # from the concurrent factored flange stresses, both with the
+    # 0.75*alpha*phi_f*Fyf floor, on Ae in tension and Ag in compression; the
+    # 6.8.3 net-area hole (nominal + 1/16), and per-plate single-shear bolt
+    # counts.  "odot_bdm" is accepted as a deprecated alias.
     method: str = "nsba"
-    fcf_top: float | None = None      # factored top-flange stress, ksi (signed)
+    # concurrent (top, bottom) Strength I flange stresses, ksi, tension
+    # positive, one pair per load case (stress_based only)
+    stress_cases: tuple[tuple[float, float], ...] = ()
+    # a single concurrent case, kept for older callers: used as
+    # stress_cases = ((fcf_top, fcf_bot),) when stress_cases is empty
+    fcf_top: float | None = None      # factored top-flange stress, ksi
     fcf_bot: float | None = None      # factored bottom-flange stress, ksi
     r_h: float = 1.0                  # hybrid factor (6.10.1.10.1)
     alpha: float = 1.0               # 6.13.6.1.3b (0.85 for slender-web comp.)
@@ -434,6 +442,29 @@ def _flange_pfy(flange: Flange, n_rows: int, hole_dia: float,
     return res.capacity, a_g, a_n, res.details["Ae"], fy, fu
 
 
+def _stress_cases(inp: SpliceInput) -> tuple:
+    if inp.stress_cases:
+        return tuple(inp.stress_cases)
+    if inp.fcf_top is not None or inp.fcf_bot is not None:
+        return ((inp.fcf_top or 0.0, inp.fcf_bot or 0.0),)
+    return ()
+
+
+def _stress_based_forces(inp: SpliceInput, cases, net_hole: float) -> dict:
+    """Top and bottom flange design forces by the pre-8th-Edition
+    design-stress method, on the smaller Ae / Ag and lower Fyf of the two
+    sides (:func:`splices.stress_based_flange_design_forces`)."""
+    a_e, a_g, f_yf = {}, {}, {}
+    for pos in ("top", "bottom"):
+        rows = inp.top_flange_rows if pos == "top" else inp.bottom_flange_rows
+        sides = [getattr(s, f"{pos}_flange") for s in (inp.left, inp.right)]
+        a_e[pos] = min(_flange_pfy(f, rows, net_hole)[3] for f in sides)
+        a_g[pos] = min(f.area for f in sides)
+        f_yf[pos] = min(_grade(f.material)[0] for f in sides)
+    return splices.stress_based_flange_design_forces(
+        cases, a_e, a_g, f_yf, r_h=inp.r_h, alpha=inp.alpha)
+
+
 def _design_flange(inp: SpliceInput, position: str) -> ComponentDesign:
     b = inp.bolts
     odot = _method(inp.method) == "stress_based"
@@ -442,23 +473,24 @@ def _design_flange(inp: SpliceInput, position: str) -> ComponentDesign:
     if position == "top":
         left_f, right_f = inp.left.top_flange, inp.right.top_flange
         plates, n_rows = inp.top_plates, inp.top_flange_rows
-        fcf = inp.fcf_top
     else:
         left_f, right_f = inp.left.bottom_flange, inp.right.bottom_flange
         plates, n_rows = inp.bottom_plates, inp.bottom_flange_rows
-        fcf = inp.fcf_bot
 
-    # ODOT/NSBA: design stress Fcf from the actual factored flange stress;
-    # otherwise the full yield stress (Fcf = Fyf) is used (nsba default).
-    f_design = None
-    if odot and fcf is not None:
-        fy_flange, _ = _grade(left_f.material)
-        f_design = splices.flange_design_stress_fcf(
-            fcf, fy_flange, r_h=inp.r_h, alpha=inp.alpha)
-
-    pfy_l, _, _, ae_l, _, _ = _flange_pfy(left_f, n_rows, net_hole, f_design)
-    pfy_r, *_ = _flange_pfy(right_f, n_rows, net_hole, f_design)
+    pfy_l, _, _, ae_l, _, _ = _flange_pfy(left_f, n_rows, net_hole)
+    pfy_r, *_ = _flange_pfy(right_f, n_rows, net_hole)
     pfy = min(pfy_l, pfy_r)                      # weaker flange governs
+    # stress_based: design forces from the factored flange stresses
+    # (6.13.6.1.4c, pre-8th Edition) in place of Pfy = Fyf*Ae.
+    # The splice-plate tension checks use the tension force and a
+    # compression check is added when a case puts the flange in compression.
+    cases = _stress_cases(inp)
+    p_tension, p_compression = pfy, None
+    if odot and cases:
+        forces = _stress_based_forces(inp, cases, net_hole)
+        pfy = forces[position]
+        p_tension = forces["tension"][position]
+        p_compression = forces["compression"][position] or None
 
     # filler on the thinner flange (thickness difference >= 1/8 in matters)
     filler_t = abs(left_f.thickness - right_f.thickness)
@@ -588,7 +620,8 @@ def _design_flange(inp: SpliceInput, position: str) -> ComponentDesign:
         long_joint=long_joint,
         extra={"filler_R": r_fill, "Ae": ae_l, "arm_pos": arm_pos,
                "arm_steel": arm_steel, "cols": cols, "hole_dia": hole,
-               "slip_force": slip_force, "pt_per": pt_per},
+               "slip_force": slip_force, "pt_per": pt_per,
+               "P_tension": p_tension, "P_compression": p_compression},
     )
     # Service II / deck-casting slip of the flange bolts alone (6.13.2.8,
     # C6.13.6.1.3b).  Advisory: when the flange bolts cannot carry the slip
@@ -610,19 +643,25 @@ def _flange_checks(inp, comp, plates, flanges, pfy, hole, n_rows):
     ``flanges`` is the (left, right) pair; each girder flange is checked with
     its own thickness and Fy/Fu and the weaker governs."""
     plate_fy, plate_fu = _grade(plates.material)
+    # tension checks (yield, net-section fracture, block shear) take the
+    # tension design force; bolts and bearing take the governing pfy.
+    p_t = comp.extra.get("P_tension", pfy)
+    p_c = comp.extra.get("P_compression")
     sp = splices.splice_plate_design_force(
-        pfy, plates.outer_area, plates.inner_area)
+        p_t, plates.outer_area, plates.inner_area)
+    sp_c = (splices.splice_plate_design_force(
+        p_c, plates.outer_area, plates.inner_area) if p_c else None)
     checks = comp.checks
 
     cols = comp.extra["cols"]
     l_shear = comp.end + (cols - 1) * comp.pitch
     holes_shear = cols - 0.5
 
-    for label, force, thk, width, a_g in (
+    for label, force, thk, width, a_g, force_c in (
         ("outer", sp.outer, plates.outer_thickness, plates.outer_width,
-         plates.outer_area),
+         plates.outer_area, sp_c.outer if sp_c else None),
         ("inner", sp.inner, plates.inner_thickness, 2 * plates.inner_width,
-         plates.inner_area),
+         plates.inner_area, sp_c.inner if sp_c else None),
     ):
         a_n = (width - n_rows * hole) * (a_g / width if width else 0.0)
         # factored yield on gross section (6.13.5.2 / 6.8.2.1)
@@ -644,6 +683,12 @@ def _flange_checks(inp, comp, plates, flanges, pfy, hole, n_rows):
             n_tension=2, tens_gross=comp.gage_bolts + comp.edge,
             holes_tension=1.5, t=thk, f_y=plate_fy, f_u=plate_fu, hole=hole,
             p_u=force, name=f"{label} plate block shear"))
+        # compression yield of the plate (pre-8th Ed. 6.13.6.1.4c, phi_c =
+        # 0.90): only when a stress case puts the flange in compression.
+        if force_c:
+            checks.append(CheckResult(
+                article="6.13.6.1.4c", name=f"{label} plate yield (compression)",
+                capacity=0.90 * plate_fy * a_g, demand=force_c))
 
     # block shear on the girder flange (6.13.4): the two bolt groups can tear
     # out independently (Mode 1, four shear planes) or as one block around the
@@ -659,7 +704,7 @@ def _flange_checks(inp, comp, plates, flanges, pfy, hole, n_rows):
         return _block_shear(
             n_shear=n_shear, l_shear=l_shear, holes_shear=holes_shear,
             n_tension=2, tens_gross=tens, holes_tension=holes_t,
-            t=flange.thickness, f_y=f_y, f_u=f_u, hole=hole, p_u=pfy,
+            t=flange.thickness, f_y=f_y, f_u=f_u, hole=hole, p_u=p_t,
             name=f"girder flange block shear (Mode {mode})")
 
     for mode in (1, 2):
