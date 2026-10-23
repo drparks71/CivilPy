@@ -702,6 +702,24 @@ def panel_point_tags(bid: str, *, joint: str, line: str, span: str,
     return tags
 
 
+def truss_pin_tags(bid: str, *, diameter_in: float, length_in: float,
+                   fy_ksi: float, joint: str = "", weight_lb: float | None = None,
+                   rating_rf: float | None = None, governing: str = "") -> dict:
+    """A truss or hanger pin: its diameter, turned length and steel, the
+    joint it sits in, and (once rated) the controlling factor and check
+    from :mod:`civilpy.structural.aashto.lrfd.pins`."""
+    tags = {**_base("truss_pin", bid), "pin.diameter_in": f"{diameter_in:g}",
+            "pin.length_in": f"{length_in:.4g}", "pin.fy_ksi": f"{fy_ksi:g}"}
+    if joint:
+        tags["pin.joint"] = joint
+    if rating_rf is not None:
+        tags["pin.rating_rf"] = f"{rating_rf:.3f}"
+    if governing:
+        tags["pin.governing"] = governing
+    tags.update(_pay_tags("513E10220", weight_lb))
+    return tags
+
+
 def rivet_tags(bid: str, *, host: str, diameter_in: float = 1.0,
                grip_in: float | None = None, member: str = "",
                row: int | None = None, col: int | None = None,

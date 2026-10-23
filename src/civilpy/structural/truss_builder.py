@@ -362,6 +362,10 @@ class TrussBridge:
         self.lanes: list[LaneLine] = []
         self.extra_panel_loads: dict[str, float] = {}
         self._plane_trusses: dict[str, Truss] = {}
+        #: pins at pin-connected panel points, ``{node: Pin}``
+        #: (:class:`civilpy.structural.aashto.lrfd.pins.Pin`, packing keyed
+        #: by this bridge's typed members)
+        self.pins: dict = {}
 
         self._generate_chords()
         if pattern is not None:
@@ -888,6 +892,18 @@ class TrussBridge:
                                       details=details, advisory=True)
         return out
 
+    def pin_checks(self, analysis: "TrussAnalysis", *,
+                   significant_rotation: bool = False,
+                   new_design: bool = False) -> dict[str, dict]:
+        """6.7.6.2 checks of every pin in :attr:`pins` under the member
+        forces of ``analysis`` (factored, if the analysis was): each packed
+        member pulls the pin toward its far end with its share of the
+        axial force.  Returns ``{node: {check: CheckResult}}``."""
+        return {node: pin.checks(analysis.pin_forces(node),
+                                 significant_rotation=significant_rotation,
+                                 new_design=new_design)
+                for node, pin in self.pins.items()}
+
     def influence_lines(self, plane: str = "near", *,
                         joints: str = "pinned") -> dict[Member, InfluenceLine]:
         """Axial-force influence line of every member for a unit load
@@ -1401,6 +1417,22 @@ class TrussAnalysis:
             raise ValueError(f"{m.name}: needs TrussSection.i_in4 and depth_in")
         moment = max(abs(v) for v in self.end_moments(m)) * 12.0
         return moment * (sec.depth_in / 2.0) / sec.i_in4
+
+    def pin_forces(self, node: str) -> dict[Member, tuple[float, float]]:
+        """In-plane force each member framing into ``node`` applies to the
+        joint's pin, ``(fx, fz)`` kips: the axial force (tension positive)
+        along the unit vector from the node toward the member's far end."""
+        x0, z0 = self.bridge.nodes[node]
+        out = {}
+        for m in self.bridge.members:
+            if node not in (m.start, m.end):
+                continue
+            far = m.end if m.start == node else m.start
+            x1, z1 = self.bridge.nodes[far]
+            length = math.hypot(x1 - x0, z1 - z0)
+            n = self.axial(m)
+            out[m] = (n * (x1 - x0) / length, n * (z1 - z0) / length)
+        return out
 
     def deflection_in(self, node: str) -> tuple[float, float]:
         """Panel-point displacement ``(dx, dz)`` in inches."""

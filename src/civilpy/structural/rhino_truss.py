@@ -75,6 +75,7 @@ from civilpy.structural.rhino_layers import (
     LAYER_TRUSS_DIAGONALS,
     LAYER_TRUSS_END_POSTS,
     LAYER_TRUSS_STRUTS,
+    LAYER_TRUSS_PINS,
     LAYER_TRUSS_VERTICALS,
 )
 
@@ -245,6 +246,23 @@ class GussetPlacement:
 
 
 @dataclass(frozen=True)
+class PinPlacement:
+    """A pin at a joint: the shared :class:`civilpy.structural.aashto.lrfd.
+    pins.Pin` (diameter, Fy, packing positions along its axis, inches from
+    the work point) and the direction its axis runs in bridge coordinates
+    (default transverse).  ``rating_rf`` / ``governing`` carry the write-back
+    of :func:`~civilpy.structural.aashto.lrfd.pins.pin_checks`."""
+    id: str
+    node: str
+    pin: object
+    axis: Point3 = (0.0, 1.0, 0.0)
+    joint: str = ""
+    projection_in: float = 1.0
+    rating_rf: float = None
+    governing: str = ""
+
+
+@dataclass(frozen=True)
 class ReviewItem:
     """A proposed repair, or a past inspection finding, located on an element.
 
@@ -275,6 +293,7 @@ class TrussModel:
     gussets: list = field(default_factory=list)
     reviews: list = field(default_factory=list)
     doc_tags: dict = field(default_factory=dict)
+    pins: list = field(default_factory=list)
 
     def node(self, nid: str) -> TrussNode:
         return self.nodes[nid]
@@ -558,6 +577,30 @@ def gusset_objects(model: TrussModel, g: GussetPlacement) -> list:
         rating_rf=g.rating_rf, governing=g.governing or None, steel=g.steel)
     return [EmitObject("prism", LAYER_GUSSET_PLATES, pts, tags,
                        _scale(n, g.thickness_in * ft))]
+
+
+def pin_objects(model: TrussModel, p: PinPlacement) -> list:
+    """The pin as one cylinder along its axis through the work point,
+    spanning its packing (outer plate faces) plus ``projection_in`` at each
+    end for the nuts or caps."""
+    pin = p.pin
+    if pin.packing:
+        lo = min(k.position - k.thickness / 2 for k in pin.packing)
+        hi = max(k.position + k.thickness / 2 for k in pin.packing)
+    else:
+        lo = hi = 0.0
+    lo, hi = lo - p.projection_in, hi + p.projection_in
+    ft = 1.0 / 12.0
+    a = _unit(p.axis)
+    c = model.nodes[p.node].point
+    base, tip = _add(c, _scale(a, lo * ft)), _add(c, _scale(a, hi * ft))
+    length_in = hi - lo
+    weight = math.pi * (pin.diameter / 2) ** 2 * length_in / 1728.0 * builtup.STEEL_PCF
+    tags = bim.truss_pin_tags(p.id, diameter_in=pin.diameter, length_in=length_in,
+                              fy_ksi=pin.fy, joint=p.joint or p.node, weight_lb=weight,
+                              rating_rf=p.rating_rf, governing=p.governing)
+    return [EmitObject("cylinder", LAYER_TRUSS_PINS, (base, tip), tags,
+                       radius_ft=pin.diameter / 2.0 * ft)]
 
 
 def gusset_rivet_objects(model: TrussModel, g: GussetPlacement, *,
@@ -902,6 +945,7 @@ def unresolved_reviews(model: TrussModel) -> list:
     known = {m.id for m in model.members}
     known |= {f.id for f in model.framing}
     known |= {g.id for g in model.gussets}
+    known |= {p.id for p in model.pins}
     known |= set(model.nodes)
     return [i for i in model.reviews if i.target not in known]
 
@@ -947,7 +991,8 @@ def panel_point_objects(model: TrussModel, node: TrussNode) -> list:
 def truss_emit(model: TrussModel, *, lod: int = 400, shorten_ft: float = 0.0,
                panel_points: bool = True, framing: bool = True,
                gussets: bool = True, members: bool = True,
-               rivets: bool = False, reviews: bool = True) -> tuple:
+               rivets: bool = False, reviews: bool = True,
+               pins: bool = True) -> tuple:
     """Every drawable object of ``model`` as neutral ``EmitObject`` records.
 
     ``lod`` 400 or more draws the built-up members piece by piece; 300 draws
@@ -978,6 +1023,12 @@ def truss_emit(model: TrussModel, *, lod: int = 400, shorten_ft: float = 0.0,
             out.extend(objs)
             if rivets:
                 out.extend(gusset_rivet_objects(model, g))
+    if pins:
+        for p in model.pins:
+            objs = pin_objects(model, p)
+            for o in objs:
+                o.tags.update(extra.get(p.id, {}))
+            out.extend(objs)
     if reviews:
         for item in model.reviews:
             out.extend(review_objects(model, item))

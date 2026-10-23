@@ -99,6 +99,7 @@ LAYER_LATERAL_BRACING = "Superstructure::Lateral Bracing"
 LAYER_SWAY_BRACING = "Superstructure::Sway Bracing"
 LAYER_PANEL_POINTS = "Superstructure::Panel Points"
 LAYER_RIVETS = "Superstructure::Rivets"
+LAYER_TRUSS_PINS = "Superstructure::Truss Pins"
 
 #: PROPOSED review overlay (:mod:`civilpy.structural.rhino_truss`): what a
 #: proposed repair set touches, and what past inspections found, located on
@@ -198,6 +199,7 @@ DEFAULT_COLORS: dict[str, tuple[int, int, int, int]] = {
     LAYER_SWAY_BRACING: (140, 130, 150, 255),
     LAYER_PANEL_POINTS: (230, 200, 60, 255),
     LAYER_RIVETS: (60, 60, 65, 255),
+    LAYER_TRUSS_PINS: (95, 95, 105, 255),
     # review overlay: proposed work hot magenta, past findings amber
     LAYER_REVIEW: (200, 40, 160, 255),
     LAYER_REVIEW_REPAIRS: (220, 40, 170, 255),
