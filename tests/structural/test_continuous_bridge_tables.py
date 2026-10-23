@@ -94,3 +94,25 @@ def test_table_a3_7_influence_coefficients(row):
         got = beam.moment_at(k / 10, [_Point(1.0, x_load)])
         assert got == pytest.approx(float(row[f"M.{k}"]), abs=6e-5), k
     assert beam.moment_at(1.0, [_Point(1.0, x_load)]) == pytest.approx(float(row["M_B"]), abs=6e-5)
+
+
+def test_hl93_dual_truck_negative_moment():
+    # LRFD 3.6.1.3.1: 90 % of two trucks (>= 50 ft apart) + 90 % lane at the pier
+    # of two 100 ft spans, against a brute-force placement on ContinuousBeam
+    import numpy as np
+    beam = ContinuousBeam([0.0, 100.0, 200.0])
+    il = beam.continuous_moment_influence_line(100.0, per_span=200)
+    r = il.hl93_effect(sign=-1, dual_truck=True)
+    assert r["dual_truck_governs"]
+    lane = -0.64 * 100.0 ** 2 / 8.0                              # both spans loaded: -wL^2/8
+    best = 0.0
+    ps = [8.0, 32.0, 32.0, 8.0, 32.0, 32.0]
+    for a in np.arange(-56.0, 200.0, 0.5):                       # first axle position
+        for gap in np.arange(50.0, 150.0, 1.0):
+            xs = [a, a + 14.0, a + 28.0, a + 28.0 + gap, a + 42.0 + gap, a + 56.0 + gap]
+            loads = [_Point(p, x) for p, x in zip(ps, xs) if 0.0 <= x <= 200.0]
+            best = min(best, beam.moment_at(100.0, loads))
+    expected = 0.9 * (best * 1.33 + lane)
+    assert r["total"] == pytest.approx(expected, rel=5e-3)
+    single = il.hl93_effect(sign=-1)
+    assert r["total"] < single["total"]

@@ -325,13 +325,21 @@ class InfluenceLine:
                            best.reversed_train)
 
     def hl93_effect(self, im: float = 0.33, lane_klf: float = 0.64,
-                    rear_spacings=(14.0, 30.0), sign: float = 1.0) -> dict:
+                    rear_spacings=(14.0, 30.0), sign: float = 1.0,
+                    dual_truck: bool = False, dual_gap_step: float = 1.0) -> dict:
         """Governing HL-93 effect on this line (3.6.1.3): design truck
         (rear-axle spacing swept) with dynamic load allowance, plus lane
         load on the positive regions.  Returns the pieces and the total.
         ``sign=-1`` gives the most negative effect instead (truck and
         tandem placed for the minimum, lane load on the negative
-        regions) -- e.g. compression in a truss web member."""
+        regions) -- e.g. compression in a truss web member.
+
+        ``dual_truck`` also tries the 3.6.1.3.1 loading for negative moment
+        between points of contraflexure and for interior-pier reactions:
+        90 % of two design trucks (14 ft rear axles) at least 50 ft apart,
+        lead axle of one to rear axle of the other (the gap swept in
+        ``dual_gap_step``), plus 90 % of the lane load; the larger governs
+        (``details["dual_truck_governs"]``)."""
         sign = 1.0 if sign >= 0 else -1.0
         best_truck = max(
             (self.maximize_axle_train([8.0, 32.0, 32.0], [0.0, 14.0, 14.0 + s],
@@ -346,13 +354,26 @@ class InfluenceLine:
         else:
             x, y = self.ordinates(2001)
             lane = lane_klf * float(np.trapezoid(np.clip(y, None, 0.0), x))
-        return {
+        total = truck.value * (1.0 + im) + lane
+        out = {
             "truck": truck.value,
             "tandem_governs": truck is tandem,
             "lane": lane,
-            "total": truck.value * (1.0 + im) + lane,
+            "total": total,
             "position": truck.position,
         }
+        if dual_truck:
+            pair = max((self.maximize_axle_train(
+                [8.0, 32.0, 32.0, 8.0, 32.0, 32.0],
+                [0.0, 14.0, 28.0, 28.0 + g, 42.0 + g, 56.0 + g], sign=sign)
+                for g in np.arange(50.0, max(self.length, 50.0) + 1e-9, dual_gap_step)),
+                key=lambda r: sign * r.value)
+            dual = 0.9 * (pair.value * (1.0 + im) + lane)
+            out["dual_truck"] = dual
+            out["dual_truck_governs"] = sign * dual > sign * total
+            if out["dual_truck_governs"]:
+                out["total"] = dual
+        return out
 
     def hs20_44_effect(self, sign: float = 1.0, concentrated: str = "moment",
                        second_concentrated: bool = False,
