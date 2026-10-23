@@ -1283,15 +1283,23 @@ def stability_bracing_torsional(
     brace_stiffness: float,
     c_b: float = 1.0,
     l_b: float | None = None,
-    phi: float = 0.75,
+    phi: float = 0.80,
+    h_o: float | None = None,
+    full_depth: bool = True,
 ) -> CheckResult:
     """Torsional stability-bracing stiffness + strength for cross-frames /
     diaphragms (6.7.4.2.2, 10th Edition), the adopted Yura provisions.
 
-    * Required torsional brace stiffness (stiffness limit):
-      beta_Treq = 2.4 L Mr^2 / (phi n E I_eff C_b^2)
-    * Required brace strength (moment):
-      M_br = 0.024 Mr L / (n C_b L_b)
+    * Required torsional brace stiffness (Eq. 6.7.4.2.2-2, or -3 with
+      ``full_depth=False`` for braces shallower than 0.8 of the girder or
+      without full-depth connection plates):
+      beta_Treq = 2.4 (3.6) L Mr^2 / (phi_sb n E I_eff C_b^2), phi_sb = 0.80
+      (6.5.4.2)
+    * Required brace strength (Eq. 6.7.4.2.2-14 / -15) when the flange
+      centroid distance ``h_o`` is given:
+      M_br = 2.4 (3.6) L Mr^2 / (n E I_eff C_b^2) x L_b / (500 h_o);
+      without ``h_o`` the AISC 360 Appendix 6 form
+      M_br = 0.024 Mr L / (n C_b L_b) is reported instead
 
     ``m_r`` is the required flexural strength Mr (kip-in), ``l_span`` the span L
     (in), ``n_braces`` the number of intermediate brace points, ``i_eff`` the
@@ -1299,17 +1307,22 @@ def stability_bracing_torsional(
     provided torsional stiffness beta_T (kip-in/rad), ``c_b`` the moment
     gradient, ``l_b`` the unbraced length (in, defaults to L/(n+1)).  The
     reported ``ratio`` is the provided/required *stiffness* margin; the required
-    brace moment is in ``details``.
-
-    NOTE: coefficients follow the adopted torsional-bracing model; validate
-    against BrR (``ALRFD_10E_06_07_04_02_02_Stiffness``/``_Strength``) before
-    relying on this for production ratings — flagged in the build plan.
+    brace moment is in ``details``.  The components of beta_T (cross-frame,
+    web distortion, in-plane girder, lean-on bracing) are in
+    :mod:`civilpy.structural.aashto.lrfd.stability_bracing`, validated against
+    the NSBA lean-on bracing guide (B303) examples.
     """
+    from civilpy.structural.aashto.lrfd import stability_bracing as sb
+
     if l_b is None:
         l_b = l_span / (n_braces + 1)
-    beta_t_req = (2.4 * l_span * m_r**2
-                  / (phi * n_braces * E_STEEL * i_eff * c_b**2))
-    m_br = 0.024 * m_r * l_span / (n_braces * c_b * l_b)
+    beta_t_req = sb.required_stiffness(l_span, m_r, n_braces, i_eff, c_b,
+                                       full_depth=full_depth, phi_sb=phi)
+    if h_o is not None:
+        m_br = sb.required_brace_moment(l_span, m_r, n_braces, i_eff, l_b, h_o, c_b,
+                                        full_depth=full_depth)
+    else:
+        m_br = 0.024 * m_r * l_span / (n_braces * c_b * l_b)
 
     return CheckResult(
         article="6.7.4.2.2",
@@ -1319,6 +1332,7 @@ def stability_bracing_torsional(
         phi=1.0,
         details={
             "beta_T_req": beta_t_req, "M_br_req": m_br, "L_b": l_b,
+            "M_br_form": "6.7.4.2.2-14/-15" if h_o is not None else "AISC 360 App. 6",
             "validate_against_brr": True,
         },
     )

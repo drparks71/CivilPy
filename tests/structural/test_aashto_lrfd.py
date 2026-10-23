@@ -154,8 +154,9 @@ class TestStabilityBracing:
             m_r=6000.0, l_span=1200.0, n_braces=5, i_eff=200.0,
             brace_stiffness=5.0e5, c_b=1.0)
         # beta_T_req = 2.4*L*Mr^2 / (phi*n*E*Ieff*Cb^2)
+        # phi_sb = 0.80 (6.5.4.2, 10th Ed.)
         expected = (2.4 * 1200.0 * 6000.0**2
-                    / (0.75 * 5 * 29000.0 * 200.0 * 1.0**2))
+                    / (0.80 * 5 * 29000.0 * 200.0 * 1.0**2))
         assert r.details["beta_T_req"] == pytest.approx(expected)
         # M_br = 0.024*Mr*L/(n*Cb*L_b), L_b default = L/(n+1) = 200
         assert r.details["L_b"] == pytest.approx(200.0)
@@ -163,6 +164,18 @@ class TestStabilityBracing:
             0.024 * 6000.0 * 1200.0 / (5 * 1.0 * 200.0))
         assert r.ok is True                       # provided 5e5 > required
         assert r.details["validate_against_brr"] is True
+
+    def test_10th_edition_strength_with_h_o(self):
+        # NSBA B303 Example 1, positive moment: 782 k-in, 119,128 k-in/rad
+        r = lrfd.stability_bracing_torsional(
+            m_r=54668.0, l_span=1680.0, n_braces=5, i_eff=872.0,
+            brace_stiffness=185674.0, l_b=288.0, h_o=70.19)
+        assert r.details["M_br_req"] == pytest.approx(782.0, abs=1.0)
+        assert r.details["beta_T_req"] == pytest.approx(119128.0, rel=1e-3)
+        r3 = lrfd.stability_bracing_torsional(
+            m_r=54668.0, l_span=1680.0, n_braces=5, i_eff=872.0,
+            brace_stiffness=185674.0, l_b=288.0, h_o=70.19, full_depth=False)
+        assert r3.details["beta_T_req"] == pytest.approx(1.5 * r.details["beta_T_req"])
 
     def test_registered_in_articles(self):
         assert (lrfd.ARTICLES["6.7.4.2.2"]
