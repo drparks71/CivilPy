@@ -28,6 +28,13 @@ Year       Article (current num.)  Change
 2015       5.4.2.3                 ktd time-development factor revised
 2015       6.9.4.1.1               phi_c for steel columns 0.90 -> 0.95
 2016       5.9.2.3.1a              transfer compression 0.60 -> 0.65 f'ci
+2024       6.10.8.2.3a             Lp 1.0 -> 1.1 rt sqrt(E/Fyc); LTB
+                                   Fyr 0.5 Fyc welded / 0.7 Fyc rolled
+2024       6.10.6.2.3              lambda_rw 5.7 -> c_rw sqrt(E/Fyc),
+                                   c_rw = 3.1 + 5/a_wc in 4.6..5.7
+2024       6.10.1.6                first-order f_l limit 1.2 -> 1.1 Lp
+2024       6.10.8.2.3b             C_b from M_max, M_A, M_B, M_C
+                                   (:func:`moment_gradient_factor`)
 ========== ======================= ====================================
 """
 

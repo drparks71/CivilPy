@@ -6,8 +6,10 @@
 
 """AASHTO LRFD Chapter 6 — steel I-girder design checks.
 
-Articles follow the 9th/10th Edition numbering (unchanged since the 5th
-Edition for these checks).  Units: kip, inch, ksi.
+Articles follow the 10th Edition (2024) numbering and values; checks
+whose values changed in the 10th Edition take ``design_year`` (before 2024:
+the 9th Edition values -- see :mod:`civilpy.structural.aashto.lrfd.editions`).
+Units: kip, inch, ksi.
 """
 
 from __future__ import annotations
@@ -26,6 +28,71 @@ def _fyr(f_yc: float, f_yw: float) -> float:
     buckling equations treat as the start of yielding in the compression
     flange once residual stresses are accounted for."""
     return max(min(0.7 * f_yc, f_yw), 0.5 * f_yc)
+
+
+def _tenth_edition(design_year: int | None) -> bool:
+    return design_year is None or design_year >= 2024
+
+
+def _fyr_ltb(f_yc: float, f_yw: float, welded: bool, longitudinally_stiffened: bool,
+             design_year: int | None) -> float:
+    """Fyr for lateral-torsional buckling (6.10.8.2.3a): 10th Ed. 0.5 Fyc
+    for welded sections with longitudinally unstiffened webs, 0.7 Fyc for
+    rolled sections; otherwise (and before 2024) :func:`_fyr`."""
+    if _tenth_edition(design_year) and not longitudinally_stiffened:
+        return 0.5 * f_yc if welded else 0.7 * f_yc
+    return _fyr(f_yc, f_yw)
+
+
+def _lp_coefficient(design_year: int | None) -> float:
+    """Lp = 1.1 rt sqrt(E / Fyc) in the 10th Ed. (Eq. 6.10.8.2.3a-4), 1.0
+    before."""
+    return 1.1 if _tenth_edition(design_year) else 1.0
+
+
+def web_slenderness_limit(d_c: float, t_w: float, b_fc: float | None, t_fc: float | None,
+                          f_yc: float, design_year: int | None = None) -> float:
+    """lambda_rw, the noncompact web slenderness limit (Eqs.
+    6.10.6.2.3-3 to -5, 10th Ed.): c_rw sqrt(E / Fyc) with c_rw = 3.1 +
+    5.0 / a_wc between 4.6 and 5.7, a_wc = 2 Dc tw / (bfc tfc).  Before 2024
+    (or without the compression flange) 5.7 sqrt(E / Fyc)."""
+    if not _tenth_edition(design_year) or b_fc is None or t_fc is None:
+        return 5.7 * math.sqrt(E_STEEL / f_yc)
+    a_wc = 2.0 * d_c * t_w / (b_fc * t_fc)
+    c_rw = min(max(3.1 + 5.0 / a_wc, 4.6), 5.7)
+    return c_rw * math.sqrt(E_STEEL / f_yc)
+
+
+def moment_gradient_factor(m_max: float, m_a: float, m_b: float, m_c: float) -> float:
+    """C_b = 12.5 M_max / (2.5 M_max + 3 M_A + 4 M_B + 3 M_C) (Eq.
+    6.10.8.2.3b-1, 10th Ed.): absolute factored moments, M_A / M_B / M_C at
+    the quarter, middle and three-quarter points of the unbraced length."""
+    m_max, m_a, m_b, m_c = (abs(v) for v in (m_max, m_a, m_b, m_c))
+    return 12.5 * m_max / (2.5 * m_max + 3.0 * m_a + 4.0 * m_b + 3.0 * m_c)
+
+
+def lateral_bending_amplification(f_bu: float, l_b: float, r_t: float, f_yc: float,
+                                  c_b: float = 1.0, r_b: float = 1.0,
+                                  design_year: int | None = None) -> dict:
+    """Second-order amplification of flange lateral bending (6.10.1.6): the
+    first-order f_l1 may be used when L_b <= 1.1 L_p sqrt(C_b R_b / (|f_bu| /
+    F_yc)) (Eq. 6.10.1.6-2; 1.2 L_p before 2024); otherwise ``f_l = AF f_l1
+    >= f_l1`` with ``AF = 0.85 / (1 - |f_bu| / F_e)`` (Eq. 6.10.1.6-4) and
+    the elastic LTB stress ``F_e = C_b R_b pi^2 E / (L_b / r_t)^2`` (Eq.
+    6.10.8.2.3b-2, not capped at R_b R_h F_yc).  ``f_bu`` is the
+    compression-flange stress.  Returns AF, F_e and the length limit."""
+    l_p = _lp_coefficient(design_year) * r_t * math.sqrt(E_STEEL / f_yc)
+    coef = 1.1 if _tenth_edition(design_year) else 1.2
+    f = abs(f_bu)
+    limit = coef * l_p * math.sqrt(c_b * r_b / (f / f_yc)) if f > 0 else math.inf
+    f_e = c_b * r_b * math.pi ** 2 * E_STEEL / (l_b / r_t) ** 2
+    if l_b <= limit:
+        af = 1.0
+    elif f >= f_e:
+        af = math.inf
+    else:
+        af = max(0.85 / (1.0 - f / f_e), 1.0)
+    return {"AF": af, "Fe": f_e, "Lp": l_p, "Lb_limit": limit, "first_order_ok": l_b <= limit}
 
 
 @article("6.10.8.2.2", "Local Buckling Resistance")
@@ -86,20 +153,27 @@ def lateral_torsional_buckling_resistance(
     f_bu: float | None = None,
     r_b: float = 1.0,
     r_h: float = 1.0,
+    welded: bool = True,
+    longitudinally_stiffened: bool = False,
+    design_year: int | None = None,
 ) -> CheckResult:
     """Compression-flange lateral torsional buckling resistance Fnc
     (6.10.8.2.3).
 
     Parameters: unbraced length ``l_b`` (in), compression flange ``b_fc`` x
     ``t_fc`` (in), depth of web in compression ``d_c`` (in), web thickness
-    ``t_w`` (in), yield strengths (ksi), moment gradient modifier ``c_b``,
-    optional factored flange stress demand ``f_bu`` (ksi).
+    ``t_w`` (in), yield strengths (ksi), moment gradient modifier ``c_b``
+    (:func:`moment_gradient_factor`), optional factored flange stress demand
+    ``f_bu`` (ksi).  10th Ed.: Lp = 1.1 rt sqrt(E/Fyc) and Fyr = 0.5 Fyc
+    for welded sections with unstiffened webs (0.7 Fyc rolled, ``welded=
+    False``); ``design_year`` before 2024 gives 1.0 rt sqrt(E/Fyc) and
+    Fyr = min(0.7 Fyc, Fyw) >= 0.5 Fyc.
     """
-    # Effective radius of gyration for LTB (6.10.8.2.3-9)
+    # Effective radius of gyration for LTB (6.10.8.2.3b-3)
     r_t = b_fc / math.sqrt(12.0 * (1.0 + d_c * t_w / (3.0 * b_fc * t_fc)))
-    l_p = 1.0 * r_t * math.sqrt(E_STEEL / f_yc)  # 6.10.8.2.3-4
-    f_yr = _fyr(f_yc, f_yw)
-    l_r = math.pi * r_t * math.sqrt(E_STEEL / f_yr)  # 6.10.8.2.3-5
+    l_p = _lp_coefficient(design_year) * r_t * math.sqrt(E_STEEL / f_yc)  # 6.10.8.2.3a-4
+    f_yr = _fyr_ltb(f_yc, f_yw, welded, longitudinally_stiffened, design_year)
+    l_r = math.pi * r_t * math.sqrt(E_STEEL / f_yr)  # 6.10.8.2.3a-5
 
     f_max = r_b * r_h * f_yc
     if l_b <= l_p:
@@ -140,7 +214,7 @@ def tension_flange_resistance(
     fbu + fl/3 <= phi_f*Fnt (6.10.8.1.2-1).  ``f_l`` is the flange lateral
     bending stress (ksi)."""
     f_nt = r_h * f_yt  # 6.10.8.3-1
-    demand = None if f_bu is None else f_bu + f_l / 3.0
+    demand = None if f_bu is None else abs(f_bu) + abs(f_l) / 3.0
     return CheckResult(
         article="6.10.8.1.2",
         name="Discretely Braced Flanges in Tension",
@@ -186,13 +260,15 @@ def web_load_shedding_factor(
     b_fc: float,
     t_fc: float,
     f_yc: float,
+    design_year: int | None = None,
 ) -> CheckResult:
     """Web load-shedding factor Rb (6.10.1.10.2): 1.0 for compact and
-    noncompact webs (2*Dc/tw <= lambda_rw = 5.7*sqrt(E/Fyc)); slender webs
+    noncompact webs (2*Dc/tw <= lambda_rw, :func:`web_slenderness_limit` --
+    c_rw sqrt(E/Fyc) in the 10th Ed., 5.7 sqrt(E/Fyc) before); slender webs
     shed stress to the compression flange per -3:
     Rb = 1 - awc/(1200 + 300*awc) * (2*Dc/tw - lambda_rw) <= 1.0.
     ``capacity`` holds Rb."""
-    lam_rw = 5.7 * math.sqrt(E_STEEL / f_yc)
+    lam_rw = web_slenderness_limit(d_c, t_w, b_fc, t_fc, f_yc, design_year)
     slenderness = 2.0 * d_c / t_w
     a_wc = 2.0 * d_c * t_w / (b_fc * t_fc)
     if slenderness <= lam_rw:
@@ -612,27 +688,33 @@ def bolt_bearing_resistance(
 @article("6.10.10.4", "Shear Connector Strength Limit State")
 def shear_connector_strength(
     d_stud: float,
-    f_c: float,
-    e_c: float,
+    f_c: float | None = None,
+    e_c: float | None = None,
     nominal_force: float | None = None,
     f_u_stud: float = 60.0,
+    design_year: int | None = None,
 ) -> CheckResult:
     """Nominal resistance of one stud shear connector (6.10.10.4.3-1):
-    Qn = 0.5*Asc*sqrt(f'c*Ec) <= Asc*Fu, phi_sc = 0.85.
+    10th Ed. Qn = 0.70*Asc*Fu with phi_sc = 1.0; before 2024
+    Qn = 0.5*Asc*sqrt(f'c*Ec) <= Asc*Fu with phi_sc = 0.85 (``f_c`` and
+    ``e_c`` needed only then).
 
     Pass the interface force ``nominal_force`` P (6.10.10.4.2 — the lesser
     of the deck crushing and steel yielding forces, kip) to get the
     required connector count in ``details``."""
     a_sc = math.pi * d_stud**2 / 4.0
-    q_n = min(0.5 * a_sc * math.sqrt(f_c * e_c), a_sc * f_u_stud)
+    if _tenth_edition(design_year):
+        q_n, phi = 0.70 * a_sc * f_u_stud, 1.0
+    else:
+        q_n, phi = min(0.5 * a_sc * math.sqrt(f_c * e_c), a_sc * f_u_stud), 0.85
     details = {"Asc": a_sc, "Qn": q_n}
     if nominal_force is not None:
-        details["n_required"] = nominal_force / (0.85 * q_n)
+        details["n_required"] = nominal_force / (phi * q_n)
     return CheckResult(
         article="6.10.10.4",
         name="Shear Connector Strength Limit State",
         capacity=q_n,
-        phi=0.85,
+        phi=phi,
         details=details,
     )
 
@@ -644,22 +726,17 @@ def shear_connector_fatigue_pitch(
     shear_flow: float,
     n_cycles: float | None = None,
     pitch: float | None = None,
+    design_year: int | None = None,
 ) -> CheckResult:
-    """Required stud pitch for fatigue (6.10.10.1.2): p <= n*Zr/Vsr, where
-    the fatigue resistance of one stud is Zr = 5.5*d^2 for Fatigue I
-    (infinite life, ``n_cycles`` omitted) or Zr = alpha*d^2 with
-    alpha = 34.5 - 4.28*log10(N) for Fatigue II (6.10.10.2).  (The old
-    4th-edition single-combination rule floored alpha*d^2 at 5.5*d^2/2;
-    the floor died with the Fatigue I/II split.)
+    """Required stud pitch for fatigue (6.10.10.1.2): p <= n*Zr/Vsr, with
+    the fatigue resistance Zr of one stud from
+    :func:`shear_connector_fatigue_resistance` (Fatigue I with
+    ``n_cycles`` omitted, Fatigue II for N cycles).
 
     ``shear_flow`` is the fatigue shear flow Vsr = Vf*Q/I (kip/in).
     ``capacity`` is the maximum permitted pitch (in); pass the actual
     ``pitch`` as demand — note larger-is-worse, so ok means pitch <= max."""
-    if n_cycles is None:
-        z_r = 5.5 * d_stud**2
-    else:
-        alpha = 34.5 - 4.28 * math.log10(n_cycles)
-        z_r = alpha * d_stud**2
+    z_r = shear_connector_fatigue_resistance(d_stud, n_cycles, design_year).capacity
     p_max = n_per_row * z_r / shear_flow
     return CheckResult(
         article="6.10.10.1.2",
@@ -770,6 +847,8 @@ def constructibility_compression_flange(
     from the 6.10.8.2 functions and ``f_crw`` from
     :func:`web_bend_buckling`.  ``capacity``/``demand`` carry the governing
     case; all three appear in ``details``."""
+    # 6.10.1.6: f_bu and f_l are taken positive in the resistance equations
+    f_bu, f_l = abs(f_bu), abs(f_l)
     cases = {}
     if not slender_web:
         cases["yielding"] = (PHI_F * r_h * f_yc, f_bu + f_l)
@@ -933,6 +1012,9 @@ def transverse_stiffener_inertia(
     f_yw: float,
     f_ys: float,
     tension_field: bool = False,
+    v_u: float | None = None,
+    phi_v_cr: float | None = None,
+    phi_v_n: float | None = None,
 ) -> CheckResult:
     """Transverse-stiffener moment-of-inertia requirement (6.10.11.1.3).
 
@@ -947,9 +1029,10 @@ def transverse_stiffener_inertia(
 
     Web shear buckling only (``tension_field=False``): I_t1 governs.  When the
     web's postbuckling (tension-field) resistance is relied on and I_t2 > I_t1,
-    the requirement rises toward I_t2 — this implementation conservatively
-    requires I_t2 on that path (the spec permits a shear-demand interpolation);
-    ``validate_against_brr`` is set for the tension-field path."""
+    the requirement is I_t1 + (I_t2 - I_t1) rho_w (Eq. 6.10.11.1.3-7) with
+    rho_w = (V_u - phi V_cr) / (phi V_n - phi V_cr) between 0 and 1 for the
+    panel (pass ``v_u``, ``phi_v_cr``, ``phi_v_n``); without them I_t2 is
+    required (conservative)."""
     j = max(2.5 / (d_o / d_web) ** 2 - 2.0, 0.5)
     i_t1 = min(d_o, d_web) * t_w**3 * j
     f_crs = min(0.31 * E_STEEL / (b_t / t_p) ** 2, f_ys)
@@ -957,13 +1040,17 @@ def transverse_stiffener_inertia(
     i_t2 = d_web**4 * rho_t**1.3 / 40.0 * (f_yw / E_STEEL) ** 1.5
 
     required = i_t1
+    rho_w = None
     if tension_field and i_t2 > i_t1:
-        required = i_t2
+        if None not in (v_u, phi_v_cr, phi_v_n):
+            rho_w = min(max((v_u - phi_v_cr) / (phi_v_n - phi_v_cr), 0.0), 1.0)
+            required = i_t1 + (i_t2 - i_t1) * rho_w
+        else:
+            required = i_t2
     details = {"I_t1": i_t1, "I_t2": i_t2, "J": j, "Fcrs": f_crs,
-               "rho_t": rho_t, "governing": "I_t2" if required == i_t2
-               and required != i_t1 else "I_t1"}
-    if tension_field:
-        details["validate_against_brr"] = True
+               "rho_t": rho_t, "rho_w": rho_w,
+               "governing": "I_t1" if required == i_t1 else
+               ("I_t2" if rho_w is None else "interpolated")}
     return CheckResult(
         article="6.10.11.1.3",
         name="Transverse Stiffener Moment of Inertia",
@@ -1003,13 +1090,16 @@ def bearing_stiffener_effective_column(
     pairs: int = 1,
     p_u: float | None = None,
     design_year: int | None = None,
+    web_under_stiffener: bool = True,
 ) -> CheckResult:
     """Axial resistance of the bearing-stiffener effective column
     (6.10.11.2.4): the stiffener plates acting with a web strip extending
     9*tw to each side, radius of gyration about the web mid-thickness,
     KL = 0.75*D, resistance per 6.9.4.1.1 (Q = 1.0 — bearing stiffeners
-    are exempt from the slender-element reduction)."""
-    strip_len = 18.0 * t_w + pairs * t_p            # 9tw each side + plates
+    are exempt from the slender-element reduction).  The strip includes
+    the web under the stiffener plates; ``web_under_stiffener=False`` takes
+    18 tw only, as NSBA SBDH Example 1 does (conservative)."""
+    strip_len = 18.0 * t_w + (pairs * t_p if web_under_stiffener else 0.0)
     a_g = 2.0 * pairs * b_t * t_p + strip_len * t_w
     # plates about the web mid-thickness (each at tw/2 + b_t/2 offset)
     offset = t_w / 2.0 + b_t / 2.0
@@ -1043,6 +1133,8 @@ def compression_flange_resistance(
     f_bu: float | None = None,
     r_b: float = 1.0,
     r_h: float = 1.0,
+    welded: bool = True,
+    design_year: int | None = None,
 ) -> CheckResult:
     """Compression-flange flexural resistance Fnc (6.10.8.2.1-1): the
     smaller of local buckling (6.10.8.2.2) and lateral-torsional buckling
@@ -1051,7 +1143,8 @@ def compression_flange_resistance(
         b_fc=b_fc, t_fc=t_fc, f_yc=f_yc, f_yw=f_yw, r_b=r_b, r_h=r_h)
     ltb = lateral_torsional_buckling_resistance(
         l_b=l_b, b_fc=b_fc, t_fc=t_fc, d_c=d_c, t_w=t_w, f_yc=f_yc,
-        f_yw=f_yw, c_b=c_b, r_b=r_b, r_h=r_h)
+        f_yw=f_yw, c_b=c_b, r_b=r_b, r_h=r_h, welded=welded,
+        design_year=design_year)
     f_nc = min(flb.capacity, ltb.capacity)
     return CheckResult(
         article="6.10.8.2.1",
@@ -1076,7 +1169,7 @@ def discretely_braced_compression_flange(
     f_bu + f_l/3 <= phi_f * Fnc, with ``f_nc`` from 6.10.8.2.1 and ``f_l``
     the flange lateral bending stress.  When ``f_yf`` is given the 6.10.1.6
     limit f_l <= 0.6*Fyf is also verified (reported in details)."""
-    demand = f_bu + f_l / 3.0
+    demand = abs(f_bu) + abs(f_l) / 3.0           # both positive (6.10.1.6)
     details = {"fl": f_l}
     if f_yf is not None:
         details["fl_limit"] = 0.6 * f_yf
@@ -1110,21 +1203,41 @@ def continuously_braced_flange(
     )
 
 
+#: stud shear connectors, Table 6.6.1.2.3-1 Condition 9.2 (10th Ed.): A
+#: (ksi^5), m, threshold (ksi), 75-yr (ADTT)SL equivalent to infinite life
+STUD_FATIGUE = {"A": 1040e8, "m": 5, "threshold": 7.0, "adtt_infinite": 11_320}
+
+
 @article("6.10.10.2", "Shear Connector Fatigue Resistance")
 def shear_connector_fatigue_resistance(
     d_stud: float,
     n_cycles: float | None = None,
+    design_year: int | None = None,
 ) -> CheckResult:
-    """Fatigue shear resistance of one stud (6.10.10.2): Fatigue I
-    (infinite life, ``n_cycles=None``): Zr = 5.5*d^2 (6.10.10.2-1).
-    Fatigue II: Zr = alpha*d^2 with alpha = 34.5 - 4.28*log10(N)."""
-    if n_cycles is None:
+    """Fatigue shear resistance of one stud (6.10.10.2).
+
+    10th Ed.: Zr = (dF)n Asc (Eq. 6.10.10.2-1) with the stud detail of
+    Table 6.6.1.2.3-1 (Condition 9.2, :data:`STUD_FATIGUE`): Fatigue I
+    (``n_cycles=None``) the 7.0 ksi threshold, Fatigue II (A / N)^(1/5),
+    A = 1040 x 10^8 ksi^5.  Before 2024: Zr = 5.5 d^2 (Fatigue I) or
+    alpha d^2 with alpha = 34.5 - 4.28 log10(N) (Fatigue II)."""
+    a_sc = math.pi * d_stud**2 / 4.0
+    if _tenth_edition(design_year):
+        if n_cycles is None:
+            f_n = STUD_FATIGUE["threshold"]
+            details = {"combination": "Fatigue I", "dFn": f_n}
+        else:
+            f_n = (STUD_FATIGUE["A"] / n_cycles) ** (1.0 / STUD_FATIGUE["m"])
+            details = {"combination": "Fatigue II", "dFn": f_n}
+        z_r = f_n * a_sc
+    elif n_cycles is None:
         z_r = 5.5 * d_stud**2
         details = {"combination": "Fatigue I"}
     else:
         alpha = 34.5 - 4.28 * math.log10(n_cycles)
         z_r = alpha * d_stud**2
         details = {"combination": "Fatigue II", "alpha": alpha}
+    details["Asc"] = a_sc
     return CheckResult(
         article="6.10.10.2",
         name="Shear Connector Fatigue Resistance",
@@ -1388,20 +1501,25 @@ def classify_web_negative(
     i_yc: float,
     i_yt: float,
     straight: bool = True,
+    b_fc: float | None = None,
+    t_fc: float | None = None,
+    design_year: int | None = None,
 ) -> CheckResult:
     """Slender-web screen for composite sections in negative flexure and
     noncomposite sections (6.10.6.2.3): sections of straight bridges with
-    flange yields <= 70 ksi, web slenderness 2*Dc/tw < 5.7*sqrt(E/Fyc),
+    flange yields <= 70 ksi, web slenderness 2*Dc/tw < lambda_rw,
     and Iyc/Iyt >= 0.3 may use the Appendix A6 provisions (web
     plastification, resistances up to Mp); anything else takes the
     slender-web 6.10.8 stress-based path.
 
     ``d_c`` is the *elastic* depth of web in compression (D6.3.1).
-    ``capacity`` is 1.0 when A6-eligible (nonslender); details carry the
-    slenderness numbers.
+    lambda_rw is c_rw sqrt(E/Fyc) (Eq. 6.10.6.2.3-3, 10th Ed.) when the
+    compression flange ``b_fc`` x ``t_fc`` is given, 5.7 sqrt(E/Fyc)
+    otherwise or before 2024.  ``capacity`` is 1.0 when A6-eligible
+    (nonslender); details carry the slenderness numbers.
     """
     lam_w = 2.0 * d_c / t_w
-    lam_rw = 5.7 * math.sqrt(E_STEEL / f_yc)
+    lam_rw = web_slenderness_limit(d_c, t_w, b_fc, t_fc, f_yc, design_year)
     checks = {
         "straight_bridge": straight,
         "fy_flanges_le_70": max(f_yc, f_yt) <= 70.0,
@@ -1414,7 +1532,8 @@ def classify_web_negative(
         name="Web Classification — Negative Flexure",
         capacity=1.0 if eligible else 0.0,
         demand=1.0,
-        details={**checks, "2Dc/tw": lam_w, "5.7sqrt(E/Fyc)": lam_rw,
+        details={**checks, "2Dc/tw": lam_w, "lambda_rw": lam_rw,
+                 "5.7sqrt(E/Fyc)": 5.7 * math.sqrt(E_STEEL / f_yc),
                  "classification": ("nonslender (A6 eligible)" if eligible
                                     else "slender web (use 6.10.8)")},
     )

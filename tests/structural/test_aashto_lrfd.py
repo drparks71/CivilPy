@@ -54,38 +54,50 @@ class TestLateralTorsionalBuckling:
     # rt for bfc=16, tfc=1.0, Dc=24, tw=0.5:
     #   rt = 16/sqrt(12*(1 + 24*0.5/(3*16*1.0))) = 4.105 in
     RT = 16.0 / math.sqrt(12.0 * (1.0 + 24.0 * 0.5 / (3.0 * 16.0 * 1.0)))
+    # (design_year, Lp coefficient, Fyr): 10th Ed. Lp = 1.1 rt sqrt(E/Fyc),
+    # Fyr = 0.5 Fyc welded; 9th Ed. 1.0 and min(0.7 Fyc, Fyw)
+    EDITIONS = [(None, 1.1, 25.0), (2020, 1.0, 35.0)]
 
-    def kwargs(self, l_b):
+    def kwargs(self, l_b, year):
         return dict(
-            l_b=l_b, b_fc=16.0, t_fc=1.0, d_c=24.0, t_w=0.5, f_yc=50.0, f_yw=50.0
+            l_b=l_b, b_fc=16.0, t_fc=1.0, d_c=24.0, t_w=0.5, f_yc=50.0, f_yw=50.0,
+            design_year=year,
         )
 
-    def test_plateau_below_lp(self):
-        l_p = self.RT * math.sqrt(29000.0 / 50.0)
-        r = lrfd.lateral_torsional_buckling_resistance(**self.kwargs(l_p * 0.9))
+    @pytest.mark.parametrize("year,coef,fyr", EDITIONS)
+    def test_plateau_below_lp(self, year, coef, fyr):
+        l_p = coef * self.RT * math.sqrt(29000.0 / 50.0)
+        r = lrfd.lateral_torsional_buckling_resistance(**self.kwargs(l_p * 0.99, year))
         assert r.capacity == pytest.approx(50.0)
         assert r.details["regime"] == "inelastic-plateau"
+        assert r.details["Lp"] == pytest.approx(l_p)
 
-    def test_inelastic_interpolation(self):
-        l_p = self.RT * math.sqrt(29000.0 / 50.0)
-        l_r = math.pi * self.RT * math.sqrt(29000.0 / 35.0)
+    @pytest.mark.parametrize("year,coef,fyr", EDITIONS)
+    def test_inelastic_interpolation(self, year, coef, fyr):
+        l_p = coef * self.RT * math.sqrt(29000.0 / 50.0)
+        l_r = math.pi * self.RT * math.sqrt(29000.0 / fyr)
         l_b = (l_p + l_r) / 2.0
-        r = lrfd.lateral_torsional_buckling_resistance(**self.kwargs(l_b))
-        expected = (1 - (1 - 35.0 / 50.0) * 0.5) * 50.0  # midpoint of Lp..Lr
+        r = lrfd.lateral_torsional_buckling_resistance(**self.kwargs(l_b, year))
+        expected = (1 - (1 - fyr / 50.0) * 0.5) * 50.0  # midpoint of Lp..Lr
         assert r.capacity == pytest.approx(expected)
 
-    def test_elastic_buckling(self):
-        l_r = math.pi * self.RT * math.sqrt(29000.0 / 35.0)
+    @pytest.mark.parametrize("year,coef,fyr", EDITIONS)
+    def test_elastic_buckling(self, year, coef, fyr):
+        l_r = math.pi * self.RT * math.sqrt(29000.0 / fyr)
         l_b = 1.5 * l_r
-        r = lrfd.lateral_torsional_buckling_resistance(**self.kwargs(l_b))
+        r = lrfd.lateral_torsional_buckling_resistance(**self.kwargs(l_b, year))
         f_cr = math.pi**2 * 29000.0 / (l_b / self.RT) ** 2
         assert r.capacity == pytest.approx(f_cr)
         assert r.details["regime"] == "elastic"
 
+    def test_rolled_sections_keep_0_7_fyc(self):
+        r = lrfd.lateral_torsional_buckling_resistance(**self.kwargs(300.0, None), welded=False)
+        assert r.details["Fyr"] == pytest.approx(35.0)
+
     def test_cb_capped_at_plateau(self):
-        l_p = self.RT * math.sqrt(29000.0 / 50.0)
+        l_p = 1.1 * self.RT * math.sqrt(29000.0 / 50.0)
         l_b = l_p * 1.05
-        r = lrfd.lateral_torsional_buckling_resistance(**self.kwargs(l_b) | {"c_b": 2.0})
+        r = lrfd.lateral_torsional_buckling_resistance(**self.kwargs(l_b, None) | {"c_b": 2.0})
         assert r.capacity == pytest.approx(50.0)  # Cb amplification capped at RbRhFyc
 
 
@@ -216,7 +228,15 @@ class TestTransverseStiffener:
         assert r.details["I_t2"] == pytest.approx(i_t2, rel=1e-6)
         assert r.demand == pytest.approx(i_t2, rel=1e-6)   # I_t2 governs
         assert r.ok is False                               # 36 < ~152
-        assert r.details["validate_against_brr"] is True
+        assert r.details["governing"] == "I_t2" and r.details["rho_w"] is None
+        # with the panel shears, Eq. 6.10.11.1.3-7 interpolates on rho_w
+        half = lrfd.transverse_stiffener_inertia(
+            moment_of_inertia=36.0, b_t=6.0, t_p=0.5, d_web=96.0, t_w=0.5,
+            d_o=96.0, f_yw=50.0, f_ys=50.0, tension_field=True,
+            v_u=300.0, phi_v_cr=200.0, phi_v_n=400.0)
+        assert half.details["rho_w"] == pytest.approx(0.5)
+        assert half.demand == pytest.approx(
+            (half.details["I_t1"] + i_t2) / 2, rel=1e-6)
 
 
 class TestBearingStiffenerDetails:
@@ -274,14 +294,20 @@ class TestFlangeResistanceFamily:
 
 
 class TestShearConnectorDetails:
+    # 9th-Ed. forms (design_year before 2024); the 10th-Ed. stud detail
+    # (Condition 9.2) is checked against SBDH Example 1
     def test_fatigue_resistance_infinite_life(self):
-        r = lrfd.shear_connector_fatigue_resistance(d_stud=0.875)
+        r = lrfd.shear_connector_fatigue_resistance(d_stud=0.875, design_year=2020)
         assert r.capacity == pytest.approx(5.5 * 0.875**2)
         assert r.details["combination"] == "Fatigue I"
 
+    def test_tenth_edition_threshold(self):
+        r = lrfd.shear_connector_fatigue_resistance(d_stud=0.875)
+        assert r.capacity == pytest.approx(7.0 * math.pi * 0.875**2 / 4)
+
     def test_fatigue_resistance_finite_life(self):
         r = lrfd.shear_connector_fatigue_resistance(d_stud=0.875,
-                                                    n_cycles=2.0e6)
+                                                    n_cycles=2.0e6, design_year=2020)
         alpha = 34.5 - 4.28 * math.log10(2.0e6)
         assert r.details["alpha"] == pytest.approx(alpha)
         assert r.capacity == pytest.approx(alpha * 0.875**2)

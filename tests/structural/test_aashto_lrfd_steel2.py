@@ -242,7 +242,7 @@ class TestShearConnectors:
     def test_stud_strength(self):
         # 7/8" stud, f'c=4, Ec=3640: Asc=0.6013
         # 0.5*0.6013*sqrt(4*3640)=36.3 > Asc*60=36.1 -> Fu governs
-        r = lrfd.shear_connector_strength(d_stud=0.875, f_c=4.0, e_c=3640.0)
+        r = lrfd.shear_connector_strength(d_stud=0.875, f_c=4.0, e_c=3640.0, design_year=2020)
         a_sc = math.pi * 0.875**2 / 4.0
         assert r.capacity == pytest.approx(
             min(0.5 * a_sc * math.sqrt(4.0 * 3640.0), a_sc * 60.0)
@@ -250,16 +250,22 @@ class TestShearConnectors:
 
     def test_required_count(self):
         r = lrfd.shear_connector_strength(
-            d_stud=0.875, f_c=4.0, e_c=3640.0, nominal_force=1500.0
+            d_stud=0.875, f_c=4.0, e_c=3640.0, nominal_force=1500.0, design_year=2020
         )
         assert r.details["n_required"] == pytest.approx(
             1500.0 / (0.85 * r.capacity)
         )
 
+    def test_tenth_edition_stud_strength(self):
+        # 10th Ed.: Qn = 0.70 Asc Fu, phi_sc = 1.0 (SBDH Example 1: 25.20 k)
+        r = lrfd.shear_connector_strength(d_stud=0.875, nominal_force=3313.0)
+        assert r.capacity == pytest.approx(0.70 * math.pi * 0.875**2 / 4 * 60.0)
+        assert r.phi == 1.0
+
     def test_fatigue_pitch_finite_life(self):
         # N = 2e6: alpha = 34.5 - 4.28*6.301 = 7.53
         r = lrfd.shear_connector_fatigue_pitch(
-            d_stud=0.875, n_per_row=3, shear_flow=1.2, n_cycles=2.0e6
+            d_stud=0.875, n_per_row=3, shear_flow=1.2, n_cycles=2.0e6, design_year=2020
         )
         alpha = 34.5 - 4.28 * math.log10(2.0e6)
         assert r.details["Zr"] == pytest.approx(alpha * 0.875**2)
@@ -267,7 +273,7 @@ class TestShearConnectors:
 
     def test_fatigue_infinite_life_floor(self):
         inf = lrfd.shear_connector_fatigue_pitch(
-            d_stud=0.875, n_per_row=3, shear_flow=1.2
+            d_stud=0.875, n_per_row=3, shear_flow=1.2, design_year=2020
         )
         assert inf.details["Zr"] == pytest.approx(5.5 * 0.875**2)
 

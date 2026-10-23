@@ -198,7 +198,9 @@ def test_short_long_and_negative_composite_sections():
 @pytest.mark.parametrize("b,t,d,tw,rt,fnc", [(8.99, 0.68, 23.92, 0.44, 2.29, 29.73),
                                              (7.04, 0.59, 23.74, 0.43, 1.71, 26.2)])
 def test_negative_flexure_ltb_of_the_stringers(b, t, d, tw, rt, fnc):
-    r = lateral_torsional_buckling_resistance(169.5, b, t, (d - 2 * t) / 2, tw, 36, 36)
+    # HIF-18-044 rates to the 8th Ed. (Lp = 1.0 rt sqrt(E/Fyc)); rolled beams
+    r = lateral_torsional_buckling_resistance(169.5, b, t, (d - 2 * t) / 2, tw, 36, 36,
+                                              welded=False, design_year=2018)
     assert r.details["rt"] == pytest.approx(rt, abs=0.015)
     assert r.capacity == pytest.approx(fnc, rel=0.006)          # the example rounds rt
 

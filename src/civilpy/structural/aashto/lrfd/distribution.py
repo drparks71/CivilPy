@@ -413,6 +413,28 @@ def lever_rule_exterior(
     return g
 
 
+def rigid_rotation_exterior(n_beams: int, s_ft: float, lane_eccentricities_ft) -> list[dict]:
+    """Exterior-girder reaction of a cross section that deflects and
+    rotates as a rigid body (C4.6.2.2.2d-1):
+    ``R = N_L / N_b + X_ext sum(e) / sum(x^2)``, for N_L = 1, 2, ... lanes
+    loaded in the order given.
+
+    Girders at equal spacing ``s_ft`` about the centroid of the pattern;
+    ``lane_eccentricities_ft`` are the lane centers' distances from that
+    centroid, positive toward the exterior girder, nearest first.  Each row
+    gives ``R`` (lanes) and ``mR`` with the Table 3.6.1.1.2-1 factor (the
+    strength-limit value; 4.6.2.2.2d also requires it at least the
+    approximate-formula value)."""
+    xs = [(k - (n_beams - 1) / 2.0) * s_ft for k in range(n_beams)]
+    sum_x2 = sum(x * x for x in xs)
+    x_ext = max(xs)
+    rows = []
+    for n_l in range(1, len(lane_eccentricities_ft) + 1):
+        r = n_l / n_beams + x_ext * sum(lane_eccentricities_ft[:n_l]) / sum_x2
+        rows.append({"lanes": n_l, "R": r, "mR": multiple_presence_factor(n_l) * r})
+    return rows
+
+
 @article("4.6.2.6", "Effective Flange Width")
 def effective_flange_width(
     s_ft: float,
