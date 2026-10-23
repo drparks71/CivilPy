@@ -326,7 +326,8 @@ class InfluenceLine:
 
     def hl93_effect(self, im: float = 0.33, lane_klf: float = 0.64,
                     rear_spacings=(14.0, 30.0), sign: float = 1.0,
-                    dual_truck: bool | str = False, dual_gap_step: float = 1.0) -> dict:
+                    dual_truck: bool | str = False, dual_gap_step: float = 1.0,
+                    dual_tandem: bool = True) -> dict:
         """Governing HL-93 effect on this line (3.6.1.3): design truck
         (rear-axle spacing swept) with dynamic load allowance, plus lane
         load on the positive regions.  Returns the pieces and the total.
@@ -343,7 +344,10 @@ class InfluenceLine:
         applies it only where the article does, between the points of
         contraflexure under a uniform load on all spans: sections whose
         line integrates to a negative effect, for the negative extreme (pass
-        ``True`` for an interior-pier reaction)."""
+        ``True`` for an interior-pier reaction).  With it, ``dual_tandem``
+        adds the C3.6.1.3.1 dual tandem: 100 % of two design tandems spaced
+        26-40 ft centre to centre, with the dynamic load allowance, plus
+        100 % of the lane load (as LRFD Simon does by default)."""
         sign = 1.0 if sign >= 0 else -1.0
         best_truck = max(
             (self.maximize_axle_train([8.0, 32.0, 32.0], [0.0, 14.0, 14.0 + s],
@@ -382,6 +386,16 @@ class InfluenceLine:
             out["dual_truck_governs"] = sign * dual > sign * total
             if out["dual_truck_governs"]:
                 out["total"] = dual
+            if dual_tandem:
+                tandems = max((self.maximize_axle_train(
+                    [25.0, 25.0, 25.0, 25.0], [0.0, 4.0, g, g + 4.0], sign=sign)
+                    for g in np.arange(26.0, 40.0 + 1e-9, 0.5)), key=lambda r: sign * r.value)
+                dual_t = tandems.value * (1.0 + im) + lane
+                out["dual_tandem"] = dual_t
+                out["dual_tandem_governs"] = sign * dual_t > sign * out["total"]
+                if out["dual_tandem_governs"]:
+                    out["total"] = dual_t
+                    out["dual_truck_governs"] = False
         return out
 
     def hs20_44_effect(self, sign: float = 1.0, concentrated: str = "moment",

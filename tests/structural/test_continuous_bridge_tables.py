@@ -127,3 +127,20 @@ def test_dual_truck_only_between_points_of_contraflexure():
     far = mid_span.hl93_effect(sign=-1, dual_truck="contraflexure")
     assert not far["in_negative_region"] and "dual_truck" not in far
     assert far["total"] == pytest.approx(mid_span.hl93_effect(sign=-1)["total"])
+
+
+def test_dual_tandem_negative_moment():
+    # C3.6.1.3.1: two tandems 26-40 ft apart (centre to centre) + 100 % lane, by brute force
+    import numpy as np
+    beam = ContinuousBeam([0.0, 60.0, 120.0])
+    il = beam.continuous_moment_influence_line(60.0, per_span=200)
+    r = il.hl93_effect(sign=-1, dual_truck=True)
+    best = 0.0
+    for a in np.arange(-44.0, 120.0, 0.25):
+        for g in np.arange(26.0, 40.01, 1.0):
+            xs = [a, a + 4.0, a + g, a + g + 4.0]
+            loads = [_Point(25.0, x) for x in xs if 0.0 <= x <= 120.0]
+            best = min(best, beam.moment_at(60.0, loads))
+    assert r["dual_tandem"] == pytest.approx(best * 1.33 - 0.64 * 60.0 ** 2 / 8.0, rel=5e-3)
+    assert r["total"] == pytest.approx(min(r["dual_tandem"], r["dual_truck"],
+                                           il.hl93_effect(sign=-1)["total"]))
