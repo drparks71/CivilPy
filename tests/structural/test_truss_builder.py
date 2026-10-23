@@ -8,6 +8,8 @@
 
 import math
 
+import numpy as np
+
 import matplotlib
 import pytest
 
@@ -360,3 +362,167 @@ def test_to_midas_sends_in_order_and_reports_errors():
     assert report["NODE"]["sent"] == len(b.midas_payloads()["NODE"])
     # one error does not stop later tables
     assert "LLAN" in report and "sent" in report["LLAN"]
+
+
+# ── G13.2 analysis: joint fixity, camber, influence lines ──────────────────
+
+from civilpy.structural.influence_lines import InfluenceLine          # noqa: E402
+
+SEC_A = TrussSection("built-up", area_in2=30.0, r_in=5.0, i_in4=900.0,
+                     depth_in=16.0)
+
+LAYOUTS = {
+    "pratt6": dict(panel_lengths_ft=[25.0] * 6, height_ft=30.0, pattern="pratt"),
+    "pratt_uneven": dict(panel_lengths_ft=[22.0, 28.0, 28.0, 22.0],
+                         heights_ft=[None, 24.0, 27.0, 24.0, None], pattern="pratt"),
+    "howe8": dict(panel_lengths_ft=[20.0] * 8, height_ft=24.0, pattern="howe"),
+    "warren6": dict(panel_lengths_ft=[18.0] * 6, height_ft=20.0, pattern="warren"),
+    "deck_pratt": dict(panel_lengths_ft=[20.0] * 6, heights_ft=[22.0] * 7,
+                       pattern="pratt", deck_level="top"),
+}
+
+
+def _loaded(name, deck=True):
+    b = TrussBridge(width_ft=20.0, **LAYOUTS[name])
+    b.assign_section(type(b.members[0]).__mro__[-2], SEC_A)     # every Member
+    if deck:
+        b.set_deck(Deck(width_ft=18.0, thickness_in=8.0, wearing_surface_psf=25))
+    for point in [fb.point for fb in b.floorbeams][1:-1]:
+        b.add_panel_load(point, 6.0)
+    return b
+
+
+@pytest.mark.parametrize("name", LAYOUTS)
+def test_pinned_frame_analysis_equals_method_of_joints(name):
+    b = _loaded(name)
+    statics = b.solve()
+    a = b.analyze(joints="pinned")
+    for m in b.members:
+        assert a.axial(m) == pytest.approx(statics[m.key], abs=1e-6)
+        assert a.end_moments(m) == (pytest.approx(0.0), pytest.approx(0.0))
+
+
+@pytest.mark.parametrize("name", LAYOUTS)
+def test_rigid_joints_change_axial_little_but_add_secondary_moments(name):
+    b = _loaded(name)
+    pinned, rigid = b.analyze(joints="pinned"), b.analyze(joints="rigid")
+    peak = max(abs(pinned.axial(m)) for m in b.members)
+    assert max(abs(rigid.axial(m) - pinned.axial(m)) for m in b.members) < 0.05 * peak
+    assert max(rigid.secondary_stress_ksi(m) for m in b.members) > 0.0
+
+
+@pytest.mark.parametrize("name", LAYOUTS)
+def test_camber_for_the_load_case_removes_moments_and_deflections(name):
+    # G13.2 4.1.2: members fabricated -PL/AE for total dead load, then that
+    # load brings the truss to its geometric profile with no secondary moments
+    b = _loaded(name)
+    a = b.analyze(joints="rigid", camber_case="total")
+    assert max(abs(v) for m in b.members for v in a.end_moments(m)) < 1e-6
+    assert max(abs(c) for n in b.nodes for c in a.deflection_in(n)) < 1e-9
+    plain = b.analyze(joints="rigid")
+    assert max(abs(plain.deflection_in(n)[1]) for n in b.nodes) > 0.01
+
+
+def test_camber_length_changes_sign_and_size():
+    b = _loaded("pratt6")
+    dl = b.camber_length_changes("total")
+    forces = b.analyze(joints="pinned").forces
+    for m, d in dl.items():
+        want = -forces[m] * b.member_length_ft(m) * 12.0 / (SEC_A.area_in2 * 29000.0)
+        assert d == pytest.approx(want)
+        assert (d > 0) == (forces[m] < 0) or abs(forces[m]) < 1e-9
+
+
+def test_staged_pinned_dead_load_locks_in_no_moment():
+    b = _loaded("pratt6")
+    staged = b.staged_analysis([("dc", "pinned"), ("dw", "rigid")])
+    rigid_dw = b.analyze(case="dw", joints="rigid")
+    for m in b.members:
+        assert staged.end_moments(m)[0] == pytest.approx(rigid_dw.end_moments(m)[0], abs=1e-9)
+        total = b.analyze(case="dc", joints="pinned").axial(m) + rigid_dw.axial(m)
+        assert staged.axial(m) == pytest.approx(total, abs=1e-9)
+
+
+def test_secondary_stress_screen_exempts_slender_members():
+    b = _loaded("pratt6")
+    slender = TrussSection("slender", area_in2=30.0, r_in=5.0, i_in4=900.0, depth_in=12.0)
+    stubby = TrussSection("stubby", area_in2=30.0, r_in=5.0, i_in4=900.0, depth_in=40.0)
+    b.assign_section(Diagonal, slender)          # 12 in / 469 in < 1/10
+    b.assign_section(Vertical, stubby)           # 40 in / 360 in > 1/10
+    checks = b.secondary_stress_checks(case="total")
+    a = b.analyze(joints="rigid")
+    for m in b.members:
+        c = checks[m.name]
+        assert c.advisory and c.article == "6.14.2.3"
+        if isinstance(m, Diagonal):
+            assert c.demand is None and "exempt" in c.details
+        elif isinstance(m, Vertical):
+            assert c.demand == pytest.approx(a.secondary_stress_ksi(m))
+            assert c.capacity == (4.0 if a.axial(m) >= 0 else 3.0)
+
+
+@pytest.mark.parametrize("panels", [4, 6, 8])
+def test_chord_influence_lines_are_beam_moment_over_depth(panels):
+    # parallel-chord Pratt, method of sections: bottom chord L_p-L_p+1 =
+    # M(x at U_p) / h left of midspan; top chord U_p-U_p+1 = -M(x at L_p+1) / h
+    panel, h = 20.0, 25.0
+    b = TrussBridge([panel] * panels, height_ft=h, width_ft=18.0)
+    b.assign_section(type(b.members[0]).__mro__[-2], SEC_A)
+    ils = b.influence_lines()
+    span = panel * panels
+    xs = np.linspace(0, span, 37)
+    for p in range(1, panels // 2):
+        il = ils[b.member(f"L{p}", f"L{p + 1}")]
+        beam = InfluenceLine.moment(span, p * panel)
+        assert il.eta(xs) == pytest.approx(beam.eta(xs) / h, abs=1e-9)
+        top = ils[b.member(f"U{p}", f"U{p + 1}")]
+        beam = InfluenceLine.moment(span, (p + 1) * panel)
+        assert top.eta(xs) == pytest.approx(-beam.eta(xs) / h, abs=1e-9)
+
+
+def test_live_load_envelope_one_lane_equals_share_times_hl93():
+    b = TrussBridge([25.0] * 6, height_ft=30.0, width_ft=24.0)
+    b.assign_section(type(b.members[0]).__mro__[-2], SEC_A)
+    b.add_lane(LaneLine("1", offset_ft=-4.0))
+    share = b.lane_fractions("near")["1"]
+    assert share == pytest.approx(0.5 + 4.0 / 24.0)
+    env = b.live_load_envelope("near")
+    ils = b.influence_lines("near")
+    for m, (tmax, cmax) in env.items():
+        pos = ils[m].hl93_effect()["total"]
+        neg = ils[m].hl93_effect(sign=-1)["total"]
+        assert tmax == pytest.approx(max(0.0, 1.2 * share * pos))
+        assert cmax == pytest.approx(min(0.0, 1.2 * share * neg))
+
+
+def test_live_load_envelope_takes_governing_lane_count():
+    b = TrussBridge([25.0] * 6, height_ft=30.0, width_ft=36.0)
+    b.assign_section(type(b.members[0]).__mro__[-2], SEC_A)
+    for k, y in enumerate((-12.0, 0.0, 12.0)):
+        b.add_lane(LaneLine(str(k), offset_ft=y))
+    shares = sorted(b.lane_fractions("near").values(), reverse=True)
+    m = b.member("L2", "L3")
+    pos = b.influence_lines()[m].hl93_effect()["total"]
+    best = max(f * sum(shares[:k]) * pos for k, f in ((1, 1.2), (2, 1.0), (3, 0.85)))
+    assert b.live_load_envelope()[m][0] == pytest.approx(best)
+
+
+@pytest.mark.parametrize("spans,coeffs", [
+    ((20.0, 20.0), (0.375, 1.25, 0.375)),
+    ((20.0, 20.0, 20.0), (0.4, 1.1, 1.1, 0.4)),
+])
+def test_continuous_stringers_give_continuous_beam_reactions(spans, coeffs):
+    b = TrussBridge(list(spans), height_ft=20.0, width_ft=20.0, pattern=None)
+    b.set_deck(Deck(width_ft=20.0, thickness_in=8.0), stringer_offsets_ft=[0.0],
+               stringer_continuity="continuous")
+    w = b.stringer_line_loads()[0.0]
+    for k, c in enumerate(coeffs):
+        assert b.floorbeam_point_loads(k)[0.0] == pytest.approx(c * w * spans[0])
+
+
+def test_rigid_analysis_needs_inertia():
+    b = TrussBridge([25.0] * 4, height_ft=25.0, width_ft=20.0)
+    b.assign_section(type(b.members[0]).__mro__[-2],
+                     TrussSection("no I", area_in2=20.0, r_in=4.0))
+    with pytest.raises(ValueError, match="i_in4"):
+        b.analyze(joints="rigid")

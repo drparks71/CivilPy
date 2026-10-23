@@ -194,3 +194,27 @@ def test_repr_is_informative():
     m, _ = _example_1()
     text = repr(m)
     assert "6 nodes" in text and "9 elements" in text and "2 loads" in text
+
+
+class TestFrameSchema:
+    @pytest.mark.parametrize("bad", [("00000", "000000"), ("000002", "000000"),
+                                     ("000000",)])
+    def test_release_flags_validated(self, bad):
+        from civilpy.structural.structural_model import Element
+        with pytest.raises(ValueError):
+            Element("a", "b", releases=bad)
+
+    def test_strain_and_body_force_register_cases(self):
+        m = StructuralModel()
+        a, b = m.add_node(0, 0), m.add_node(1, 0)
+        e = m.add_element(a.id, b.id)
+        m.add_element_strain(e.id, 1e-4, case="camber")
+        m.add_body_force("SW")
+        assert {"camber", "SW"} <= set(m.cases())
+        with pytest.raises(KeyError):
+            m.add_element_strain("nope", 1e-4)
+
+    def test_material_shear_modulus_default(self):
+        from civilpy.structural.structural_model import MaterialProperties
+        assert MaterialProperties(e=29000.0, poisson=0.3).shear_modulus == pytest.approx(29000 / 2.6)
+        assert MaterialProperties(e=29000.0, g=11200.0).shear_modulus == 11200.0

@@ -554,3 +554,37 @@ class TestConcreteSectionDispatch:
 
         with pytest.raises(ValueError, match="unsupported model length unit"):
             concrete_material_block(length_unit="cubit")
+
+
+@pytest.mark.parametrize("rel", [("000011", "000000"), ("000000", "000110"),
+                                 ("100000", "000011")])
+def test_midas_payloads_releases_and_beta(rel):
+    from civilpy.structural.structural_model import StructuralModel
+    m = StructuralModel()
+    a, b = m.add_node(0, 0, 0), m.add_node(10, 0, 0)
+    m.add_element(a.id, b.id, midas_type="BEAM", releases=rel, beta_deg=35.0)
+    m.add_restraint(a.id, preset="fixed")
+    p = mm.midas_payloads(m)
+    assert p["ELEM"]["1"]["ANGLE"] == 35.0
+    item = p["FRLS"]["1"]["ITEMS"][0]
+    assert (item["FLAG_I"], item["FLAG_J"]) == (rel[0] + "0", rel[1] + "0")
+    assert list(p).index("FRLS") == list(p).index("ELEM") + 1
+
+
+def test_midas_payloads_no_frls_without_releases():
+    m, _ = _hub_truss()
+    assert "FRLS" not in mm.midas_payloads(m)
+
+
+@pytest.mark.parametrize("start,end", [(0.0, 1.0), (0.25, 0.75)])
+def test_midas_payloads_partial_and_point_beam_loads(start, end):
+    from civilpy.structural.structural_model import StructuralModel
+    m = StructuralModel()
+    a, b = m.add_node(0, 0, 0), m.add_node(10, 0, 0)
+    e = m.add_element(a.id, b.id, midas_type="BEAM")
+    m.add_restraint(a.id, preset="fixed")
+    m.add_beam_load(e.id, -1.0, start=start, end=end)
+    m.add_beam_load(e.id, -5.0, kind="point", start=0.4)
+    items = mm.midas_payloads(m)["BMLD"]["1"]["ITEMS"]
+    assert (items[0]["TYPE"], items[0]["D"][:2]) == ("UNILOAD", [start, end])
+    assert (items[1]["TYPE"], items[1]["D"][0], items[1]["P"][0]) == ("CONLOAD", 0.4, -5.0)

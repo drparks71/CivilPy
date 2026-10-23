@@ -549,3 +549,81 @@ def test_the_fastener_field_alone_makes_a_plate():
 def test_no_members_and_no_fasteners_is_still_nothing():
     assert rt.gusset_outline_from_members([]) == []
     assert rt.gusset_outline_from_members([], fasteners=[(0.0, 0.0)]) == []
+
+
+# ---------------------------------------------------------------------------
+# hub adapter: the drawn members are the analysed members
+# ---------------------------------------------------------------------------
+SPEC = "2P24x9/16 4L6x4x3/8"
+
+
+def _warren(n=4, panel=20.0, h=15.0, normal=(0.0, 1.0, 0.0)):
+    m = rt.TrussModel("warren")
+    for k in range(n + 1):
+        m.add_node(rt.TrussNode(f"L{k}", (k * panel, 0.0, 0.0)))
+    for k in range(n):
+        m.add_node(rt.TrussNode(f"U{k}", ((k + 0.5) * panel, 0.0, h)))
+    for k in range(n):
+        m.members.append(rt.TrussMember(f"b{k}", f"L{k}", f"L{k + 1}", SPEC, normal=normal))
+        m.members.append(rt.TrussMember(f"d{k}", f"L{k}", f"U{k}", SPEC, normal=normal))
+        m.members.append(rt.TrussMember(f"e{k}", f"U{k}", f"L{k + 1}", SPEC, normal=normal))
+        if k:
+            m.members.append(rt.TrussMember(f"t{k}", f"U{k - 1}", f"U{k}", SPEC, normal=normal))
+    return m
+
+
+def _plane_supports(m, n):
+    hold = dict(fix_y=True, fix_rx=True, fix_rz=True)
+    sup = {nid: dict(hold) for nid in m.nodes}
+    sup["L0"].update(fix_x=True, fix_z=True)
+    sup[f"L{n}"].update(fix_z=True)
+    return sup
+
+
+@pytest.mark.parametrize("n", [2, 4, 6])
+@pytest.mark.parametrize("joints", ["pinned", "rigid"])
+def test_hub_self_weight_is_the_builtup_weight(n, joints):
+    from civilpy.structural.frame_analysis import reaction_totals, solve
+    m = _warren(n)
+    hub = m.to_structural_model(joints=joints, supports=_plane_supports(m, n))
+    r = solve(hub)["self weight"]
+    want = sum(builtup.weight_plf(SPEC) * m.length_ft(x) for x in m.members) / 1000.0
+    assert reaction_totals(r)[2] == pytest.approx(want, rel=1e-9)
+
+
+@pytest.mark.parametrize("n", [2, 4, 6])
+def test_pinned_hub_matches_method_of_joints(n):
+    from civilpy.structural.frame_analysis import solve
+    from civilpy.structural.truss import Truss
+    m = _warren(n)
+    hub = m.to_structural_model(joints="pinned", supports=_plane_supports(m, n))
+    for k in range(n):
+        hub.add_load(f"U{k}", fz=-10.0, case="P")
+    r = solve(hub, cases=["P"])["P"]
+    t = Truss()
+    for nid, node in m.nodes.items():
+        t.add_node(nid, node.point[0], node.point[2])
+    for x in m.members:
+        t.add_member(x.i, x.j)
+    t.add_support("L0", fix_x=True, fix_y=True)
+    t.add_support(f"L{n}", fix_y=True)
+    for k in range(n):
+        t.add_load(f"U{k}", fy=-10.0)
+    f = t.solve()
+    for x in m.members:
+        assert r.element_forces[x.id] == pytest.approx(f[(x.i, x.j)], abs=1e-6)
+
+
+@pytest.mark.parametrize("normal", [(0, 1, 0), (0, -1, 0), (0, 0.8, 0.6), (0.3, 1, 0.2)])
+def test_hub_local_y_follows_the_member_normal(normal):
+    from civilpy.structural.frame_analysis import local_axes
+    m = _warren(2, normal=normal)
+    hub = m.to_structural_model()
+    for x in m.members:
+        e = hub.elements[x.id]
+        r = local_axes(hub.nodes[x.i].coords, hub.nodes[x.j].coords, e.beta_deg)
+        u, v, w, _ = rt.member_frame(m.nodes[x.i].point, m.nodes[x.j].point, normal)
+        assert r[1] == pytest.approx(v, abs=1e-9)
+        assert r[2] == pytest.approx(w, abs=1e-9)
+        p = builtup.properties(SPEC)
+        assert hub.section_properties[e.section].iy == pytest.approx(p["Iy"] / 12 ** 4)

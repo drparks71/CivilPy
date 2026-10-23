@@ -291,6 +291,71 @@ class TrussModel:
         return (tuple(min(p[k] for p in pts) for k in range(3)),
                 tuple(max(p[k] for p in pts) for k in range(3)))
 
+    def to_structural_model(self, *, joints: str = "rigid",
+                            include_framing: bool = True,
+                            e_ksi: float = 29000.0, supports=None):
+        """This as-built model as a :class:`~civilpy.structural.
+        structural_model.StructuralModel` hub (kips / ft), so the same
+        members the BrIM emit draws are what
+        :mod:`civilpy.structural.frame_analysis` solves and
+        :func:`civilpy.structural.midas_models.midas_payloads` exports.
+
+        Truss members get their exact plan-sheet properties from
+        :func:`civilpy.structural.builtup.properties` (``Iy`` in-plane,
+        width along the member's ``normal``, so the element beta comes from
+        the normal); framing members from their web and flange plates.
+        ``joints="pinned"`` makes the truss members axial-only.  Steel
+        density gives self weight in a ``"self weight"`` case.  ``supports``
+        is ``{node_id: preset or fix-flag dict}`` (hub
+        :meth:`~StructuralModel.add_restraint` arguments); without it the
+        model carries no restraints."""
+        from civilpy.structural.frame_analysis import beta_for_normal
+        from civilpy.structural.structural_model import (
+            MaterialProperties, SectionProperties, StructuralModel, Units)
+
+        if joints not in ("pinned", "rigid"):
+            raise ValueError("joints must be 'pinned' or 'rigid'")
+        hub = StructuralModel(units=Units(force="kips", length="ft"))
+        hub.material_properties["steel"] = MaterialProperties(
+            e=e_ksi * 144.0, poisson=0.3, density=builtup.STEEL_PCF / 1000.0)
+        for n in self.nodes.values():
+            hub.add_node(*n.point, label=n.id, id=n.id)
+
+        def props(label, p):
+            if label not in hub.section_properties:
+                hub.section_properties[label] = SectionProperties(
+                    area=p["A"] / 144.0, iy=p["Iy"] / 12 ** 4,
+                    iz=p["Iz"] / 12 ** 4, j=p["J"] / 12 ** 4,
+                    asy=p.get("ASy", 0.0) / 144.0, asz=p.get("ASz", 0.0) / 144.0,
+                    depth=p["H"] / 12.0, width=p["B"] / 12.0)
+            return label
+
+        for m in self.members:
+            pi, pj = self.nodes[m.i].point, self.nodes[m.j].point
+            e = hub.add_element(m.i, m.j, id=m.id, role=m.role,
+                                midas_type="TRUSS" if joints == "pinned" else "BEAM",
+                                section=props(m.spec, builtup.properties(m.spec)),
+                                material="steel",
+                                beta_deg=beta_for_normal(pi, pj, m.normal))
+            e.metadata.update({"truss.line": m.line, "truss.span": m.span,
+                               "truss.spec": m.spec})
+        if include_framing:
+            for f in self.framing:
+                pi, pj = self.nodes[f.i].point, self.nodes[f.j].point
+                e = hub.add_element(f.i, f.j, id=f.id, role=f.role,
+                                    midas_type="BEAM",
+                                    section=props(f.section, builtup.rect_properties(f.rects())),
+                                    material="steel",
+                                    beta_deg=beta_for_normal(pi, pj, f.normal))
+                e.metadata.update({"truss.level": f.level, "truss.span": f.span})
+        for nid, spec in (supports or {}).items():
+            if isinstance(spec, str):
+                hub.add_restraint(nid, preset=spec)
+            else:
+                hub.add_restraint(nid, **spec)
+        hub.add_body_force("self weight")
+        return hub
+
 
 # --------------------------------------------------------------------------- #
 # geometry

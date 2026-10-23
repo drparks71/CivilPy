@@ -384,3 +384,68 @@ def test_floating_grid_gets_its_free_dofs_held(n_fb):
     cons = to_midas(m)["CONS"]
     assert cons["700"]["ITEMS"][0]["CONSTRAINT"] == "1100110"
     assert cons["100"]["ITEMS"][0]["CONSTRAINT"] == "1110000"
+
+
+# ---------------------------------------------------------------- hub + frame solver
+@pytest.mark.parametrize("name", GEOMS)
+def test_hub_solve_reactions_balance_every_case(name):
+    from civilpy.structural.frame_analysis import combine, reaction_totals, solve
+    from civilpy.structural.staad import to_structural_model
+
+    joints, members = GEOMS[name]
+    ks = sorted(joints)
+    m = read_std(_deck(joints, members, supports=f"{ks[0]} {ks[-1]} FIXED", loads=_loads(joints)))
+    hub = to_structural_model(m)
+    res = solve(hub)
+    for lc in m.loads:
+        if lc.is_combination:
+            continue
+        fx, fy, fz = applied_totals(m, lc.number)          # STAAD axes
+        rx, ry, rz = reaction_totals(res[f"{lc.number} {lc.title}"])   # MIDAS axes
+        assert (rx, ry, rz) == pytest.approx((-fx, fz, -fy), abs=1e-6)
+    (name4, pairs), = hub.metadata["combinations"].items()
+    tot = combine(res, pairs, name4)
+    assert reaction_totals(tot)[2] == pytest.approx(
+        -sum(f * applied_totals(m, c)[1] for c, f in [(1, 1.0), (2, 1.0), (3, 1.25)]), abs=1e-6)
+
+
+@pytest.mark.parametrize("name", GEOMS)
+def test_hub_keeps_staad_ids_sections_and_releases(name):
+    from civilpy.structural.staad import to_structural_model
+
+    joints, members = GEOMS[name]
+    m = read_std(_deck(joints, members, supports=f"{min(joints)} FIXED",
+                       releases=f"{min(members)} START MY MZ"))
+    hub = to_structural_model(m)
+    assert set(hub.nodes) == {str(j) for j in joints}
+    assert set(hub.elements) == {str(k) for k in members}
+    e = hub.elements[str(min(members))]
+    assert e.releases == ("000011", "000000")        # STAAD MY MZ -> MIDAS RZ RY
+    sec = hub.section_properties[e.section]
+    assert (sec.iy, sec.iz) == (pytest.approx(778.9 / 12 ** 4), pytest.approx(1328.6 / 12 ** 4))
+
+
+def test_pinned_pratt_deck_matches_method_of_joints():
+    # every member pinned at both ends: the frame solver must reproduce statics
+    from civilpy.structural.frame_analysis import solve
+    from civilpy.structural.staad import to_structural_model
+    from civilpy.structural.truss import Truss
+
+    joints, members = pratt(6, 10.0, 12.0, 0.0)
+    rel = "\n".join(f"{k} START MY MZ\n{k} END MY MZ" for k in members)
+    loads = "LOAD 1 LOADTYPE Dead TITLE P\nJOINT LOAD\n102 103 104 FY -10\n"
+    m = read_std(_deck(joints, members, supports="100 PINNED\n106 FIXED BUT FX MZ MX MY",
+                       releases=rel, loads=loads))
+    r = solve(to_structural_model(m))["1 P"]
+    t = Truss()
+    for j, (x, y, _) in joints.items():
+        t.add_node(str(j), x, y)
+    for k, (a, b) in members.items():
+        t.add_member(str(a), str(b))
+    t.add_support("100", fix_x=True, fix_y=True)
+    t.add_support("106", fix_y=True)
+    for j in ("102", "103", "104"):
+        t.add_load(j, fy=-10)
+    f = t.solve()
+    for k, (a, b) in members.items():
+        assert r.element_forces[str(k)] == pytest.approx(f[(str(a), str(b))], abs=1e-6)

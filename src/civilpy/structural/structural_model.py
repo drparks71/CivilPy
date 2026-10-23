@@ -17,7 +17,12 @@ It holds **no solver**.  By design the package's three analysis paradigms
 solve different math and stay separate; what they share is this *data*.  The
 model is the hub; ``rhino_stm``, the MIDAS serializer, ``.3dm`` write-back, the
 future IFC adapter, and the capacity calculators are all spokes off it
-(composition, not inheritance).
+(composition, not inheritance).  The direct-stiffness frame solver
+:mod:`civilpy.structural.frame_analysis` is one more spoke: it reads the
+optional :attr:`StructuralModel.section_properties` /
+:attr:`~StructuralModel.material_properties` registries, element releases and
+beta angles, member loads, initial strains and body forces, and writes
+:class:`Result` objects back.
 
 The vocabulary mirrors the IFC 4.3 ``IfcStructuralAnalysisDomain`` so a future
 ``from_ifc`` / ``to_ifc`` adapter is a direct mapping (see the entity table in
@@ -206,6 +211,14 @@ class Element:
     # free-form source tags (e.g. the authoring ``gdr.line`` / ``gdr.id`` /
     # ``stm.id``) preserved through read -> analysis -> write-back.
     metadata: dict = field(default_factory=dict)
+    #: end releases ``(i end, j end)`` as 6-char ``x y z rx ry rz`` flag
+    #: strings in the element's *local* axes, ``'1'`` = released (the MIDAS
+    #: ``FRLS`` FLAG_I / FLAG_J layout without the warping digit).
+    releases: tuple[str, str] = ("000000", "000000")
+    #: rotation of the local y/z axes about local x, degrees (MIDAS ``ANGLE``,
+    #: STAAD ``BETA``); see :mod:`civilpy.structural.frame_analysis` for the
+    #: beta-0 local axes.
+    beta_deg: float = 0.0
 
     def __post_init__(self):
         if self.member_type not in MEMBER_TYPES:
@@ -215,6 +228,58 @@ class Element:
             )
         if not self.nodes:
             self.nodes = [self.node_a, self.node_b]
+        if len(self.releases) != 2:
+            raise ValueError(f"releases must be (i end, j end), got {self.releases!r}")
+        for flags in self.releases:
+            if len(flags) != 6 or set(flags) - {"0", "1"}:
+                raise ValueError(f"releases must be two 6-char 0/1 strings, "
+                                 f"got {self.releases!r}")
+
+    @property
+    def is_released(self) -> bool:
+        """True when either end releases any DOF."""
+        return "1" in "".join(self.releases)
+
+
+@dataclass(frozen=True)
+class SectionProperties:
+    """Stiffness properties of a frame section, in the model's units.
+
+    ``iy`` is about the element's local y axis (the major axis of a girder
+    whose web lies in the local x-z plane -- MIDAS ``RYY``), ``iz`` about local
+    z, ``j`` the torsion constant.  ``asy`` / ``asz`` are shear areas along
+    local y / z (0 = no shear deformation).  ``depth`` (along local z) and
+    ``width`` (along local y) are the extreme-fiber dimensions used for
+    bending stresses; 0 when unknown.  The registry
+    :attr:`StructuralModel.section_properties` is keyed by the same label as
+    :attr:`Element.section`.
+    """
+
+    area: float
+    iy: float = 0.0
+    iz: float = 0.0
+    j: float = 0.0
+    asy: float = 0.0
+    asz: float = 0.0
+    depth: float = 0.0
+    width: float = 0.0
+
+
+@dataclass(frozen=True)
+class MaterialProperties:
+    """Linear-elastic material, in the model's units (e.g. ksf and kcf for
+    kips/ft).  ``g`` defaults from ``e`` and ``poisson``; ``density`` is the
+    weight per unit volume used by :class:`BodyForce`."""
+
+    e: float
+    poisson: float = 0.3
+    density: float = 0.0
+    alpha: float = 0.0
+    g: float | None = None
+
+    @property
+    def shear_modulus(self) -> float:
+        return self.g if self.g is not None else self.e / (2.0 * (1.0 + self.poisson))
 
 
 # ── Loads ─────────────────────────────────────────────────────────────────────
@@ -225,12 +290,18 @@ class BeamLoad:
     """A distributed load on a beam element."""
 
     element_id: str
-    w_start: float  # kip/ft
+    w_start: float  # kip/ft (kips for a point load)
     w_end: float | None = None  # if None, uniform
     case: str = "default"
-    #: MIDAS load direction: ``"GX"``, ``"GY"``, or ``"GZ"``.
-    direction: Literal["GX", "GY", "GZ"] = "GZ"
+    #: MIDAS load direction: global ``"GX"``/``"GY"``/``"GZ"`` or element
+    #: local ``"LX"``/``"LY"``/``"LZ"``.
+    direction: Literal["GX", "GY", "GZ", "LX", "LY", "LZ"] = "GZ"
     id: str = field(default_factory=_new_id)
+    #: loaded segment as fractions of the element length (MIDAS ``D``
+    #: relative distances); a ``point`` load sits at ``start``.
+    start: float = 0.0
+    end: float = 1.0
+    kind: Literal["uniform", "point"] = "uniform"
 
 
 @dataclass
@@ -261,6 +332,31 @@ class Load:
     @property
     def force(self) -> tuple[float, float, float]:
         return (self.fx, self.fy, self.fz)
+
+
+@dataclass
+class ElementStrain:
+    """An initial (fabrication or thermal) axial strain on an element,
+    elongation positive -- the G13.2 Art. 4.1.2 camber strain.  A member made
+    ``strain * L`` longer than its geometric length and forced to fit."""
+
+    element_id: str
+    strain: float
+    case: str = "default"
+    id: str = field(default_factory=_new_id)
+
+
+@dataclass
+class BodyForce:
+    """Self weight of every element in ``case``: weight per unit length =
+    material ``density`` x section ``area``, times the factors along global
+    X/Y/Z (``gz=-1`` is gravity in a Z-up model; STAAD ``SELFWEIGHT``, MIDAS
+    ``BODF``)."""
+
+    case: str = "default"
+    gx: float = 0.0
+    gy: float = 0.0
+    gz: float = -1.0
 
 
 @dataclass
@@ -300,6 +396,13 @@ class Result:
     reactions: dict[str, tuple[float, float, float, float, float, float]] = field(
         default_factory=dict
     )
+    #: element id -> local end forces ``(Fx, Fy, Fz, Mx, My, Mz)`` at the i end
+    #: then the j end, forces *on* the element (a frame solver fills these).
+    end_forces: dict[str, tuple[float, ...]] = field(default_factory=dict)
+    #: node id -> 6 displacements in :data:`DOF_NAMES` order.
+    displacements: dict[str, tuple[float, ...]] = field(default_factory=dict)
+    #: solver notes (e.g. DOFs restrained because nothing stiffens them).
+    notes: list[str] = field(default_factory=list)
 
 
 # ── The hub ───────────────────────────────────────────────────────────────────
@@ -324,6 +427,12 @@ class StructuralModel:
     loads: list[Load] = field(default_factory=list)
     beam_loads: list[BeamLoad] = field(default_factory=list)
     rigid_links: list[RigidLink] = field(default_factory=list)
+    element_strains: list[ElementStrain] = field(default_factory=list)
+    body_forces: list[BodyForce] = field(default_factory=list)
+    #: stiffness registries keyed by :attr:`Element.section` /
+    #: :attr:`Element.material` labels (needed only by frame solvers).
+    section_properties: dict[str, SectionProperties] = field(default_factory=dict)
+    material_properties: dict[str, MaterialProperties] = field(default_factory=dict)
     load_cases: dict[str, LoadCase] = field(default_factory=dict)
     results: dict[str, Result] = field(default_factory=dict)
     units: Units = field(default_factory=Units)
@@ -345,7 +454,9 @@ class StructuralModel:
                     member_type: str = "auto", midas_type: str = "TRUSS",
                     section: str | None = None, material: str | None = None,
                     nodes: list[str] | None = None,
-                    id: str | None = None) -> Element:
+                    id: str | None = None,
+                    releases: tuple[str, str] = ("000000", "000000"),
+                    beta_deg: float = 0.0) -> Element:
         element_nodes = nodes if nodes else [node_a, node_b]
         for n in element_nodes:
             if n not in self.nodes:
@@ -353,6 +464,7 @@ class StructuralModel:
         elem = Element(node_a, node_b, role=role, member_type=member_type,
                        midas_type=midas_type, section=section,
                        material=material, nodes=element_nodes,
+                       releases=releases, beta_deg=float(beta_deg),
                        **({"id": id} if id else {}))
         self.elements[elem.id] = elem
         return elem
@@ -401,17 +513,42 @@ class StructuralModel:
     def add_beam_load(self, element_id: str, w_start: float,
                       w_end: float | None = None, *,
                       case: str = "default",
-                      direction: Literal["GX", "GY", "GZ"] = "GZ",
-                      id: str | None = None) -> BeamLoad:
+                      direction: Literal["GX", "GY", "GZ", "LX", "LY", "LZ"] = "GZ",
+                      id: str | None = None, start: float = 0.0,
+                      end: float = 1.0,
+                      kind: Literal["uniform", "point"] = "uniform") -> BeamLoad:
         if element_id not in self.elements:
             raise KeyError(f"beam load references unknown element id {element_id!r}")
+        if not 0.0 <= start <= end <= 1.0 and kind == "uniform":
+            raise ValueError("need 0 <= start <= end <= 1 (fractions of the length)")
         if case not in self.load_cases:
             self.load_cases[case] = LoadCase(name=case)
         load = BeamLoad(element_id, w_start=w_start, w_end=w_end,
-                        case=case, direction=direction,
+                        case=case, direction=direction, start=float(start),
+                        end=float(end), kind=kind,
                         **({"id": id} if id else {}))
         self.beam_loads.append(load)
         return load
+
+    def add_element_strain(self, element_id: str, strain: float, *,
+                           case: str = "default") -> ElementStrain:
+        """Initial axial strain (elongation positive) on an element."""
+        if element_id not in self.elements:
+            raise KeyError(f"strain references unknown element id {element_id!r}")
+        if case not in self.load_cases:
+            self.load_cases[case] = LoadCase(name=case)
+        es = ElementStrain(element_id, float(strain), case=case)
+        self.element_strains.append(es)
+        return es
+
+    def add_body_force(self, case: str = "default", *, gx: float = 0.0,
+                       gy: float = 0.0, gz: float = -1.0) -> BodyForce:
+        """Self weight of every element in ``case`` (see :class:`BodyForce`)."""
+        if case not in self.load_cases:
+            self.load_cases[case] = LoadCase(name=case)
+        bf = BodyForce(case, gx=gx, gy=gy, gz=gz)
+        self.body_forces.append(bf)
+        return bf
 
     # ── Lookup ──────────────────────────────────────────────────────────────
 
@@ -431,6 +568,8 @@ class StructuralModel:
         """Load-case names actually used by loads (plus any registered)."""
         used = ({load.case for load in self.loads}
                 | {load.case for load in self.beam_loads}
+                | {s.case for s in self.element_strains}
+                | {b.case for b in self.body_forces}
                 | set(self.load_cases))
         return sorted(used)
 

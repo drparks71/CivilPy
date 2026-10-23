@@ -62,7 +62,7 @@ def influence_line_from_ordinates(positions, etas, length=None, label=""):
     span = float(length) if length is not None else float(pos[-1])
     # Off-span positions contribute nothing (left/right fill values = 0.0).
     return InfluenceLine(lambda x: np.interp(x, pos, eta, left=0.0, right=0.0),
-                         length=span, label=label)
+                         length=span, label=label, vectorized=True)
 
 
 def influence_line_from_midas(midas, element, cases, *, component="Moment-y",
@@ -131,8 +131,11 @@ class InfluenceLine:
     ``support_b``; the beam runs from 0 to ``length`` (defaults to
     ``support_b``), so overhangs come from supports inside the ends."""
 
-    def __init__(self, eta, length: float, label: str = ""):
-        self._eta = np.vectorize(eta, otypes=[float])
+    def __init__(self, eta, length: float, label: str = "",
+                 vectorized: bool = False):
+        # ``vectorized``: ``eta`` already maps arrays to arrays (np.interp),
+        # so skip the element-by-element np.vectorize wrapper
+        self._eta = eta if vectorized else np.vectorize(eta, otypes=[float])
         self.length = float(length)
         self.label = label
 
@@ -140,7 +143,7 @@ class InfluenceLine:
         """Ordinate(s) at unit-load position(s) ``x``: a float for scalar
         input, an array for array input."""
         out = self._eta(x)
-        return float(out) if np.ndim(x) == 0 else out
+        return float(out) if np.ndim(x) == 0 else np.asarray(out, dtype=float)
 
     # ── Constructors for the classic effects ─────────────────────────────
 
@@ -310,30 +313,39 @@ class InfluenceLine:
         starts = np.arange(-offsets.max(), self.length + step, step)
         for offs, rev in candidates:
             ld = loads[::-1] if rev else loads
-            for s in starts:
-                xs = s + offs
-                mask = (xs >= 0.0) & (xs <= self.length)
-                if not mask.any():
-                    continue
-                effect = sign * float(np.sum(ld[mask] * self.eta(xs[mask])))
-                if effect > best.value:
-                    best = TrainResult(effect, float(s), rev)
+            xs = starts[:, None] + offs[None, :]
+            mask = (xs >= 0.0) & (xs <= self.length)
+            etas = np.where(mask, self.eta(np.clip(xs, 0.0, self.length)), 0.0)
+            effect = sign * (etas * ld[None, :]).sum(axis=1)
+            effect[~mask.any(axis=1)] = -np.inf
+            k = int(np.argmax(effect))
+            if effect[k] > best.value:
+                best = TrainResult(float(effect[k]), float(starts[k]), rev)
         return TrainResult(sign * best.value, best.position,
                            best.reversed_train)
 
     def hl93_effect(self, im: float = 0.33, lane_klf: float = 0.64,
-                    rear_spacings=(14.0, 30.0)) -> dict:
+                    rear_spacings=(14.0, 30.0), sign: float = 1.0) -> dict:
         """Governing HL-93 effect on this line (3.6.1.3): design truck
         (rear-axle spacing swept) with dynamic load allowance, plus lane
-        load on the positive regions.  Returns the pieces and the total."""
+        load on the positive regions.  Returns the pieces and the total.
+        ``sign=-1`` gives the most negative effect instead (truck and
+        tandem placed for the minimum, lane load on the negative
+        regions) -- e.g. compression in a truss web member."""
+        sign = 1.0 if sign >= 0 else -1.0
         best_truck = max(
-            (self.maximize_axle_train([8.0, 32.0, 32.0], [0.0, 14.0, 14.0 + s])
+            (self.maximize_axle_train([8.0, 32.0, 32.0], [0.0, 14.0, 14.0 + s],
+                                      sign=sign)
              for s in rear_spacings),
-            key=lambda r: r.value,
+            key=lambda r: sign * r.value,
         )
-        tandem = self.maximize_axle_train([25.0, 25.0], [0.0, 4.0])
-        truck = max(best_truck, tandem, key=lambda r: r.value)
-        lane = self.uniform_load_effect(lane_klf)
+        tandem = self.maximize_axle_train([25.0, 25.0], [0.0, 4.0], sign=sign)
+        truck = max(best_truck, tandem, key=lambda r: sign * r.value)
+        if sign > 0:
+            lane = self.uniform_load_effect(lane_klf)
+        else:
+            x, y = self.ordinates(2001)
+            lane = lane_klf * float(np.trapezoid(np.clip(y, None, 0.0), x))
         return {
             "truck": truck.value,
             "tandem_governs": truck is tandem,

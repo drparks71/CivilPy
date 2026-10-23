@@ -91,7 +91,9 @@ primitives carry the `gdr.*` tag payloads (section 3).
 `rhino_gdr` (the `gdr.*` girder-pipeline reader: resolves tagged curves/
 points into a `StructuralModel`), `girder_pipeline` (line-girder analysis:
 HL-93 envelopes per girder), `girder_optimizer`, `structural_model` (the
-canonical analysis-model hub), `midas` / `midas_models` (MIDAS Civil
+canonical analysis-model hub), `frame_analysis` (direct-stiffness 3-D
+frame/truss solver on the hub: releases, rigid links, camber strains;
+validated against TSC's 2009 STAAD decks), `midas` / `midas_models` (MIDAS Civil
 model generation — the refined-analysis backend).
 
 **Other codes**: `arema/` (railroad: masonry, steel, TPG design),

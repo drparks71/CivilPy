@@ -1003,3 +1003,106 @@ def applied_totals(model: StaadModel, case: int) -> tuple[float, float, float]:
         Lm = model.length(mm)
         tot[ax[g[1]]] += w * (((d2 if d2 is not None else Lm) - (d1 or 0.0)) if kind == "UNI" else 1.0)
     return tuple(tot)
+
+
+def to_structural_model(model: StaadModel, *, material_label: str = "STAAD steel"):
+    """The deck as a :class:`~civilpy.structural.structural_model.StructuralModel`
+    hub (MIDAS Z-up axes, kip / ft), ready for
+    :func:`civilpy.structural.frame_analysis.solve`.
+
+    Uses the same mapping as :func:`to_midas` (verified live in Civil NX):
+    joints through :func:`staad_to_midas_xyz`, STAAD ``IZ``/``IY`` become the
+    hub's ``iy``/``iz`` (``RYY``/``RZZ``), ``AY``/``AZ`` the shear areas along
+    local z/y, releases and member-load directions move to MIDAS local axes,
+    and ``BETA`` is kept.  Node and element ids are the STAAD joint and member
+    numbers as strings.  Every primary load case becomes a hub case named by
+    :func:`case_name` (self weight as a ``BodyForce``); combinations go to
+    ``hub.metadata["combinations"]`` as ``{name: [(case, factor), ...]}``.
+    """
+    from civilpy.structural.structural_model import (
+        MaterialProperties, SectionProperties, StructuralModel, Units)
+
+    hub = StructuralModel(units=Units(force="kips", length="ft"))
+    mat = model.material
+    hub.material_properties[material_label] = MaterialProperties(
+        e=mat.get("E", 4.176e6), poisson=mat.get("POISSON", 0.3),
+        density=mat.get("DENSITY", 0.49), alpha=mat.get("ALPHA", 6.5e-6))
+    labels = {}
+    for key, s in model.sections.items():
+        label = f"{s.name} [{key}]"
+        labels[key] = label
+        hub.section_properties[label] = SectionProperties(
+            area=s.ax, iy=s.iz, iz=s.iy, j=s.ix, asy=s.az, asz=s.ay,
+            depth=s.d, width=s.b)
+    for j, p in model.joints.items():
+        hub.add_node(*staad_to_midas_xyz(p), label=str(j), id=str(j))
+    for mm, (i, j) in model.members.items():
+        if mm not in model.member_section:
+            raise ValueError(f"member {mm} has no property")
+        r = model.releases.get(mm, {"START": set(), "END": set()})
+        fi, fj = ["0"] * 6, ["0"] * 6
+        for d in r["START"]:
+            fi[_LOCAL[d]] = "1"
+        for d in r["END"]:
+            fj[_LOCAL[d]] = "1"
+        hub.add_element(str(i), str(j), midas_type="BEAM",
+                        section=labels[model.member_section[mm]],
+                        material=material_label, id=str(mm),
+                        releases=("".join(fi), "".join(fj)),
+                        beta_deg=model.beta.get(mm, 0.0))
+    for j, fixed in model.supports.items():
+        flags = {f"fix_{n}": False for n in ("x", "y", "z", "rx", "ry", "rz")}
+        for d in fixed:
+            flags[f"fix_{('x', 'y', 'z', 'rx', 'ry', 'rz')[_GLOBAL[d][0]]}"] = True
+        hub.add_restraint(str(j), **flags)
+    for master, dofs, slaves in model.slaves:
+        flags = ["0"] * 6
+        for d in dofs:
+            flags[_GLOBAL[d][0]] = "1"
+        hub.add_rigid_link(str(master), [str(s) for s in slaves if s != master],
+                           dof="".join(flags))
+
+    names = {lc.number: case_name(lc) for lc in model.loads}
+    combos = {}
+    for lc in model.loads:
+        name = names[lc.number]
+        if lc.is_combination:
+            combos[name] = [(names[c], f) for c, f in lc.combination]
+            continue
+        if lc.selfweight:
+            d, f = lc.selfweight
+            g = [0.0, 0.0, 0.0]
+            idx, sign = _GLOBAL["F" + d[-1]]
+            g[idx] = sign * f
+            hub.add_body_force(name, gx=g[0], gy=g[1], gz=g[2])
+        for j, comp in lc.joint:
+            g = [0.0] * 6
+            for k, val in comp.items():
+                if k in _GLOBAL:
+                    idx, sign = _GLOBAL[k]
+                    g[idx] += sign * val
+            if any(g):
+                hub.add_load(str(j), fx=g[0], fy=g[1], fz=g[2], mx=g[3],
+                             my=g[4], mz=g[5], case=name)
+        for mm, kind, direction, w, d1, d2 in lc.member:
+            if w == 0:
+                continue
+            mdir, sign = _member_dir(direction)
+            length = model.length(mm)
+            if kind == "UNI":
+                a = (d1 or 0.0) / length if d1 is not None else 0.0
+                b = d2 / length if d2 is not None else 1.0
+                hub.add_beam_load(str(mm), sign * w, case=name, direction=mdir,
+                                  start=a, end=b)
+            else:
+                a = d1 / length if d1 is not None else 0.5
+                hub.add_beam_load(str(mm), sign * w, case=name, direction=mdir,
+                                  start=a, kind="point")
+        if name not in hub.load_cases:
+            from civilpy.structural.structural_model import LoadCase as HubCase
+            hub.load_cases[name] = HubCase(name=name)
+    hub.metadata["combinations"] = combos
+    if model.groups:
+        hub.metadata["groups"] = {g: (kind, [str(i) for i in ids])
+                                  for g, (kind, ids) in model.groups.items()}
+    return hub

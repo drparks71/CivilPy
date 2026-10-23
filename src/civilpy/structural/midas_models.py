@@ -914,8 +914,19 @@ def midas_payloads(model: "StructuralModel", *, node_start: int = 1,
             elements[str(j)] = {
                 "TYPE": elem.midas_type, "MATL": mid,
                 "SECT": sid if sid is not None else placeholder_id,
-                "NODE": node_ids, "ANGLE": 0,
+                "NODE": node_ids, "ANGLE": elem.beta_deg,
             }
+
+    # Beam end releases -> /db/FRLS (same body as staad.to_midas, verified
+    # live): local DX DY DZ RX RY RZ flags plus the warping digit.
+    releases: dict[str, dict] = {}
+    for j, elem in enumerate(model.elements.values(), start=elem_start):
+        if elem.midas_type == "PLATE" or not elem.is_released:
+            continue
+        fi, fj = (f + "0" for f in elem.releases)
+        releases[str(j)] = {"ITEMS": [{"ID": 1, "GROUP_NAME": "", "bVALUE": False,
+                                       "FLAG_I": fi, "VALUE_I": [0] * 7,
+                                       "FLAG_J": fj, "VALUE_J": [0] * 7}]}
 
     cons = {node_int[r.node_id]: r.to_constraint_string()
             for r in model.restraints.values()
@@ -952,6 +963,8 @@ def midas_payloads(model: "StructuralModel", *, node_start: int = 1,
         payloads["THIK"] = thik
     payloads["NODE"] = nodes
     payloads["ELEM"] = elements
+    if releases:
+        payloads["FRLS"] = releases
     # Rigid (master-slave) links -> /db/RIGD. The DOF flag string is sent as an
     # integer; MIDAS right-aligns it to the 6 DOF positions (DX DY DZ RX RY RZ),
     # so "011111" (free longitudinal slip, non-composite) rides as 11111.
@@ -985,17 +998,22 @@ def midas_payloads(model: "StructuralModel", *, node_start: int = 1,
         for bload in model.beam_loads:
             body = beam_loads.setdefault(str(elem_int[bload.element_id]), {"ITEMS": []})
             w_end = bload.w_end if bload.w_end is not None else bload.w_start
+            if bload.kind == "point":
+                shape = {"TYPE": "CONLOAD", "D": [bload.start, 0.0, 0.0, 0.0],
+                         "P": [bload.w_start, 0.0, 0.0, 0.0]}
+            else:
+                shape = {"TYPE": "UNILOAD",
+                         "D": [bload.start, bload.end, 0.0, 0.0],   # relative
+                         "P": [bload.w_start, w_end, 0.0, 0.0]}
             body["ITEMS"].append({
                 "ID": len(body["ITEMS"]) + 1,
                 "LCNAME": bload.case,
                 "GROUP_NAME": "",
                 "CMD": "BEAM",
-                "TYPE": "UNILOAD",
                 "DIRECTION": bload.direction,
                 "USE_PROJECTION": False,
                 "USE_ECCEN": False,
-                "D": [0.0, 1.0, 0.0, 0.0],   # full length, relative
-                "P": [bload.w_start, w_end, 0.0, 0.0],
+                **shape,
             })
         payloads["BMLD"] = beam_loads
 

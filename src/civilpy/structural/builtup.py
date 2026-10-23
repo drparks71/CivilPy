@@ -197,6 +197,23 @@ def properties(spec: str) -> dict:
             "B": B, "tw": tw, "d": d}
 
 
+def rect_properties(rects) -> dict:
+    """``A``, ``Iy`` (about y), ``Iz``, open-section ``J`` and the extents
+    ``H`` (along z) / ``B`` (along y) of any set of ``(b_y, h_z, y_c, z_c)``
+    rectangles, inches -- the same integration as :func:`properties` for
+    sections that are not a plan-sheet spec (a rolled or welded I)."""
+    R = [r for r in rects if r[0] > 0 and r[1] > 0]
+    A = sum(b * h for b, h, _, _ in R)
+    yc = sum(b * h * y for b, h, y, _ in R) / A
+    zc = sum(b * h * z for b, h, _, z in R) / A
+    Iy = sum(b * h ** 3 / 12 + b * h * (z - zc) ** 2 for b, h, _, z in R)
+    Iz = sum(h * b ** 3 / 12 + b * h * (y - yc) ** 2 for b, h, y, _ in R)
+    J = sum(max(b, h) * min(b, h) ** 3 / 3 for b, h, _, _ in R)
+    H = max(z + h / 2 for _, h, _, z in R) - min(z - h / 2 for _, h, _, z in R)
+    B = max(y + b / 2 for b, _, y, _ in R) - min(y - b / 2 for b, _, y, _ in R)
+    return {"A": A, "Iy": Iy, "Iz": Iz, "J": J, "H": H, "B": B}
+
+
 #: Structural-steel unit weight, lb/ft^3.
 STEEL_PCF = 490.0
 

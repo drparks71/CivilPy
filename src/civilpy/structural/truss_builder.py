@@ -66,6 +66,12 @@ from civilpy.structural.aashto.lrfd.steel import (
     tension_member_resistance,
     compression_member_resistance,
 )
+from civilpy.structural.aashto.lrfd.core import CheckResult
+from civilpy.structural import frame_analysis
+from civilpy.structural.influence_lines import (
+    InfluenceLine,
+    influence_line_from_ordinates,
+)
 
 
 # ── Sections, deck, and lanes ──────────────────────────────────────────────
@@ -77,7 +83,10 @@ class TrussSection:
 
     ``r_in`` is the governing radius of gyration (needed only for
     compression checks); ``net_area_in2`` enables the rupture check on
-    tension members.
+    tension members.  ``i_in4`` (moment of inertia for bending in the plane
+    of the truss) and ``depth_in`` (member width measured in that plane)
+    are needed only for rigid-joint analysis and secondary stresses
+    (:meth:`TrussBridge.analyze`, G13.2 Art. 3.5.10).
     """
 
     name: str
@@ -87,6 +96,9 @@ class TrussSection:
     r_in: float | None = None
     net_area_in2: float | None = None
     shear_lag_u: float = 1.0
+    i_in4: float | None = None
+    depth_in: float | None = None
+    e_ksi: float = 29000.0
 
 
 @dataclass
@@ -510,13 +522,22 @@ class TrussBridge:
         raise KeyError(f"no member between {start} and {end}")
 
     def set_deck(self, deck: Deck, stringer_offsets_ft=None,
-                 max_stringer_spacing_ft: float = 8.0):
+                 max_stringer_spacing_ft: float = 8.0,
+                 stringer_continuity: str = "simple"):
         """Attach the deck and lay out stringer lines.
 
         Without explicit offsets, stringers are spaced evenly across the
         deck width (edge lines at the deck edges) at no more than
-        ``max_stringer_spacing_ft``.
+        ``max_stringer_spacing_ft``.  ``stringer_continuity`` is
+        ``"simple"`` (stringers span floorbeam to floorbeam, the usual
+        clip-angle framing) or ``"continuous"`` (stringers run over the
+        floorbeams, G13.2 Art. 3.5.2.2), which changes the floorbeam
+        reactions.
         """
+        if stringer_continuity not in ("simple", "continuous"):
+            raise ValueError("stringer_continuity must be 'simple' or "
+                             "'continuous'")
+        self.stringer_continuity = stringer_continuity
         self.deck = deck
         if stringer_offsets_ft is None:
             lo, hi = deck.edges_ft
@@ -581,10 +602,14 @@ class TrussBridge:
     def floorbeam_point_loads(self, index: int,
                               case: str = "total") -> dict[float, float]:
         """Concentrated loads (kips, positive down) the stringers drop on
-        floorbeam ``index``, keyed by transverse offset.  Each stringer
-        span is simply supported between floorbeams, so a floorbeam takes
-        half of each adjacent panel."""
+        floorbeam ``index``, keyed by transverse offset.  Simple-span
+        stringers give each floorbeam half of each adjacent panel;
+        continuous stringers give the reactions of a prismatic continuous
+        beam over all floorbeams (G13.2 Art. 3.5.2.2)."""
         line = self.stringer_line_loads(case)
+        if getattr(self, "stringer_continuity", "simple") == "continuous":
+            r = _continuous_unit_reactions(tuple(self.panel_lengths))
+            return {y: w * r[index] for y, w in line.items()}
         trib_len = 0.0
         if index > 0:
             trib_len += self.panel_lengths[index - 1] / 2.0
@@ -698,6 +723,237 @@ class TrussBridge:
                     design_year=design_year,
                 )
         return results
+
+    # ── G13.2 analysis: joint fixity, camber, secondary stresses ──────
+
+    def _deck_points(self) -> list[str]:
+        return [fb.point for fb in self.floorbeams]
+
+    def to_structural_model(self, plane: str = "near", case: str = "total",
+                            *, joints: str = "pinned",
+                            unit_loads: bool = False):
+        """One truss plane as a :class:`~civilpy.structural.structural_model.
+        StructuralModel` hub in the global X-Z plane (x along the span, z
+        up; kips / ft), for :mod:`civilpy.structural.frame_analysis`.
+
+        ``joints="pinned"`` makes every member an axial-only ``TRUSS``
+        element; ``"rigid"`` makes them ``BEAM`` elements continuous
+        through the joints, so truss distortion produces the secondary
+        moments of G13.2 Art. 3.5.10 (every member then needs
+        ``TrussSection.i_in4``).  Nodes and elements are named as in the
+        bridge (``"L2"``, ``"U1-L2"``); each element carries its typed
+        member in ``metadata["member"]``.  Supports are a pin at L0 and a
+        roller at the far bottom-chord end; out-of-plane DOFs are held.
+        The deck-level panel-point loads of ``case`` go in that case, or
+        with ``unit_loads`` one 1-kip case per deck panel point
+        (``"unit L3"``) for influence lines.
+        """
+        from civilpy.structural.structural_model import (
+            MaterialProperties, SectionProperties, StructuralModel, Units)
+
+        if joints not in ("pinned", "rigid"):
+            raise ValueError("joints must be 'pinned' or 'rigid'")
+        missing = [m.name for m in self.members if m.section is None]
+        if missing:
+            raise ValueError(f"frame analysis needs a TrussSection on every "
+                             f"member; none on {missing[:4]}")
+        hub = StructuralModel(units=Units(force="kips", length="ft"))
+        labels: dict[int, str] = {}
+        for m in self.members:
+            sec = m.section
+            if id(sec) in labels:
+                continue
+            if joints == "rigid" and sec.i_in4 is None:
+                raise ValueError(f"rigid joints need TrussSection.i_in4 "
+                                 f"({sec.name!r})")
+            label = sec.name if sec.name not in labels.values() \
+                else f"{sec.name} #{len(labels) + 1}"
+            labels[id(sec)] = label
+            i_ft4 = (sec.i_in4 or 0.0) / 12.0 ** 4
+            hub.section_properties[label] = SectionProperties(
+                area=sec.area_in2 / 144.0, iy=i_ft4, iz=i_ft4, j=i_ft4,
+                depth=(sec.depth_in or 0.0) / 12.0)
+            mat = f"E {sec.e_ksi:g} ksi"
+            hub.material_properties.setdefault(
+                mat, MaterialProperties(e=sec.e_ksi * 144.0))
+        for name, (x, y) in self.nodes.items():
+            hub.add_node(x, 0.0, y, label=name, id=name)
+        for m in self.members:
+            e = hub.add_element(m.start, m.end, id=f"{m.start}-{m.end}",
+                                role=m.role.lower().replace(" ", "_"),
+                                midas_type="TRUSS" if joints == "pinned" else "BEAM",
+                                section=labels[id(m.section)],
+                                material=f"E {m.section.e_ksi:g} ksi")
+            e.metadata["member"] = m
+        last = f"L{self.n_panels}"
+        for name in self.nodes:
+            hub.add_restraint(name, fix_x=name == "L0",
+                              fix_y=True, fix_z=name in ("L0", last),
+                              fix_rx=True, fix_rz=True)
+        if unit_loads:
+            for point in self._deck_points():
+                hub.add_load(point, fz=-1.0, case=f"unit {point}")
+        else:
+            for node, p in self.panel_point_loads(plane, case).items():
+                if p:
+                    hub.add_load(node, fz=-p, case=case)
+        return hub
+
+    def analyze(self, plane: str = "near", case: str = "total", *,
+                joints: str = "rigid", camber_case: str | None = None
+                ) -> "TrussAnalysis":
+        """Stiffness analysis of one truss plane (G13.2 Art. 3.5.1/3.5.10).
+
+        With ``camber_case`` the members are fabricated to the
+        G13.2 Art. 4.1.2 camber of that case (:meth:`camber_strains`) and
+        the strain case is added: under that load the panel points return
+        to the geometric profile and the dead-load secondary moments
+        vanish, which is why trusses are cambered for total dead load."""
+        hub = self.to_structural_model(plane, case, joints=joints)
+        if camber_case is not None:
+            for m, eps in self.camber_strains(camber_case, plane).items():
+                hub.add_element_strain(f"{m.start}-{m.end}", eps, case="camber")
+        res = frame_analysis.solve(hub)
+        cases = [case] + (["camber"] if camber_case is not None else [])
+        result = frame_analysis.combine(res, {c: 1.0 for c in cases if c in res},
+                                        name=case)
+        return TrussAnalysis(self, plane, joints, hub, result)
+
+    def camber_strains(self, case: str = "dc", plane: str = "near"
+                       ) -> dict[Member, float]:
+        """Fabrication strain per member that cambers the truss for
+        ``case`` (G13.2 Art. 4.1.2): compression members are made longer by
+        their shortening, tension members shorter by their elongation,
+        ``strain = -P / (A E)`` from a pin-jointed analysis."""
+        pinned = self.analyze(plane, case, joints="pinned")
+        return {m: -pinned.axial(m) / (m.section.area_in2 * m.section.e_ksi)
+                for m in self.members}
+
+    def camber_length_changes(self, case: str = "dc", plane: str = "near"
+                              ) -> dict[Member, float]:
+        """Fabricated-length change per member in inches (positive =
+        longer than the geometric length), ``-PL / AE`` (G13.2 4.1.2)."""
+        return {m: eps * self.member_length_ft(m) * 12.0
+                for m, eps in self.camber_strains(case, plane).items()}
+
+    def staged_analysis(self, stages, plane: str = "near") -> "TrussAnalysis":
+        """Superpose load stages applied to different structures -- the
+        locked-in forces of G13.2 Art. 3.6.1.7 / 4.1.1.  ``stages`` is a
+        list of ``(case, joints)`` (e.g. ``[("dc", "pinned"),
+        ("dw", "rigid")]`` for dead load placed while the joints are still
+        pinned on erection pins and the rest after the connections are
+        bolted).  Returns the summed forces and moments."""
+        results, hub = {}, None
+        for k, (case, joints) in enumerate(stages):
+            a = self.analyze(plane, case, joints=joints)
+            results[f"{k}:{case}"] = a.result
+            hub = a.model
+        total = frame_analysis.combine(results, {c: 1.0 for c in results},
+                                       name="staged")
+        return TrussAnalysis(self, plane, "staged", hub, total)
+
+    def secondary_stress_checks(self, plane: str = "near",
+                                case: str = "total", *,
+                                camber_case: str | None = None,
+                                tension_limit_ksi: float = 4.0,
+                                compression_limit_ksi: float = 3.0
+                                ) -> dict[str, CheckResult]:
+        """Service-level secondary stresses from a rigid-joint analysis,
+        screened per G13.2 Art. 3.5.10: members whose width in the plane
+        of distortion is under 1/10 of their length need not be checked
+        (LRFD 6.14.2.3); otherwise the bending stress M c / I is compared
+        with 4 ksi in tension members and 3 ksi in compression members
+        (Std. Spec. 10.16.3, Nair 1988), above which the excess is to be
+        treated as a primary stress.  The checks are advisory."""
+        a = self.analyze(plane, case, joints="rigid", camber_case=camber_case)
+        out = {}
+        for m in self.members:
+            sec = m.section
+            length_in = self.member_length_ft(m) * 12.0
+            ratio = (sec.depth_in or 0.0) / length_in
+            force = a.axial(m)
+            limit = tension_limit_ksi if force >= 0 else compression_limit_ksi
+            details = {"P": force, "M_i": a.end_moments(m)[0],
+                       "M_j": a.end_moments(m)[1], "width/length": ratio}
+            if not sec.depth_in:
+                raise ValueError(f"{m.name}: secondary stresses need "
+                                 f"TrussSection.depth_in")
+            if ratio < 0.1:
+                details["exempt"] = "width < L/10 (6.14.2.3)"
+                demand = None
+            else:
+                demand = a.secondary_stress_ksi(m)
+            out[m.name] = CheckResult("6.14.2.3", "truss secondary stress",
+                                      capacity=limit, demand=demand,
+                                      details=details, advisory=True)
+        return out
+
+    def influence_lines(self, plane: str = "near", *,
+                        joints: str = "pinned") -> dict[Member, InfluenceLine]:
+        """Axial-force influence line of every member for a unit load
+        moving along the deck of one truss plane (G13.2 Art. 2.2.3, static
+        method): one unit-load analysis per deck panel point, ordinates
+        joined by straight lines -- exact when the stringers are simply
+        supported between floorbeams.  Members need sections (the frame
+        solver also handles statically indeterminate trusses)."""
+        hub = self.to_structural_model(plane, joints=joints, unit_loads=True)
+        res = frame_analysis.solve(hub, store=False)
+        points = self._deck_points()
+        xs = [self.nodes[p][0] for p in points]
+        out = {}
+        for m in self.members:
+            eid = f"{m.start}-{m.end}"
+            etas = [res[f"unit {p}"].element_forces[eid] for p in points]
+            out[m] = influence_line_from_ordinates(xs, etas, length=self.span_ft,
+                                                   label=m.name)
+        return out
+
+    def lane_fractions(self, plane: str = "near") -> dict[str, float]:
+        """Share of each lane's load carried by one truss plane, by
+        floorbeam statics on the lane's two wheel lines (the lever rule
+        through stringers and floorbeams is linear in offset)."""
+        half = self.width_ft / 2.0
+        out = {}
+        for lane in self.lanes:
+            far = sum((lane.offset_ft + d + half) / self.width_ft
+                      for d in (-lane.wheel_space_ft / 2.0,
+                                lane.wheel_space_ft / 2.0)) / 2.0
+            out[lane.name] = far if plane == "far" else 1.0 - far
+        return out
+
+    def live_load_envelope(self, plane: str = "near", *, im: float = 0.33,
+                           lane_klf: float = 0.64,
+                           multiple_presence=(1.20, 1.00, 0.85, 0.65),
+                           joints: str = "pinned"
+                           ) -> dict[Member, tuple[float, float]]:
+        """HL-93 member-force envelope ``{member: (max tension, max
+        compression)}`` in kips for one plane: each lane's truck/tandem
+        (with IM) plus lane load is placed on the member's influence line
+        for the extreme of each sign, scaled by the lane's plane share
+        (:meth:`lane_fractions`), and the governing number of loaded
+        lanes is taken with the 3.6.1.1.2 multiple-presence factors.
+        Needs at least one :class:`LaneLine`."""
+        if not self.lanes:
+            raise ValueError("add LaneLine objects first (add_lane)")
+        shares = list(self.lane_fractions(plane).values())
+        out = {}
+        for m, il in self.influence_lines(plane, joints=joints).items():
+            pos = il.hl93_effect(im=im, lane_klf=lane_klf)["total"]
+            neg = il.hl93_effect(im=im, lane_klf=lane_klf, sign=-1.0)["total"]
+            env = []
+            for want in (1.0, -1.0):
+                contrib = sorted(
+                    (s * (pos if s * want > 0 else neg) for s in shares),
+                    key=lambda v: -want * v)
+                best, run = 0.0, 0.0
+                for k, c in enumerate(contrib, start=1):
+                    run += c
+                    mpf = multiple_presence[min(k, len(multiple_presence)) - 1]
+                    if want * mpf * run > want * best:
+                        best = mpf * run
+                env.append(best)
+            out[m] = (env[0], env[1])
+        return out
 
     # ── Visualization ──────────────────────────────────────────────────
 
@@ -1076,3 +1332,77 @@ class TrussBridge:
         return (f"<TrussBridge {self.span_ft:g} ft, {self.n_panels} panels, "
                 f"{len(self.members)} members/plane, "
                 f"{len(self.stringers)} stringer lines>")
+
+
+def _continuous_unit_reactions(spans: tuple) -> list[float]:
+    """Support reactions of a prismatic continuous beam over ``spans``
+    under a 1 klf uniform load (kips per support), by
+    :mod:`~civilpy.structural.frame_analysis`."""
+    return list(_CONT_CACHE.setdefault(spans, _solve_continuous(spans)))
+
+
+_CONT_CACHE: dict = {}
+
+
+def _solve_continuous(spans):
+    from civilpy.structural.structural_model import (
+        MaterialProperties, SectionProperties, StructuralModel)
+
+    hub = StructuralModel()
+    hub.section_properties["s"] = SectionProperties(area=1.0, iy=1.0, iz=1.0, j=1.0)
+    hub.material_properties["m"] = MaterialProperties(e=1.0e4)
+    xs = [0.0]
+    for sp_ in spans:
+        xs.append(xs[-1] + sp_)
+    ids = [hub.add_node(x, 0.0, 0.0, id=f"n{k}").id for k, x in enumerate(xs)]
+    for a, b in zip(ids, ids[1:]):
+        e = hub.add_element(a, b, midas_type="BEAM", section="s")
+        hub.add_beam_load(e.id, -1.0)
+    for k, nid in enumerate(ids):
+        hub.add_restraint(nid, fix_x=k == 0, fix_y=True, fix_z=True,
+                          fix_rx=True, fix_rz=True)
+    res = frame_analysis.solve(hub, store=False)["default"]
+    return tuple(res.reactions[nid][2] for nid in ids)
+
+
+@dataclass
+class TrussAnalysis:
+    """Results of :meth:`TrussBridge.analyze` for one truss plane: the hub
+    model that was solved and its :class:`~civilpy.structural.
+    structural_model.Result`, read back by typed member.  Forces in kips
+    (tension positive), moments in kip-ft, deflections in inches."""
+
+    bridge: TrussBridge
+    plane: str
+    joints: str
+    model: object
+    result: object
+
+    @staticmethod
+    def _eid(m: Member) -> str:
+        return f"{m.start}-{m.end}"
+
+    def axial(self, m: Member) -> float:
+        return self.result.element_forces[self._eid(m)]
+
+    @property
+    def forces(self) -> dict[Member, float]:
+        return {m: self.axial(m) for m in self.bridge.members}
+
+    def end_moments(self, m: Member) -> tuple[float, float]:
+        """In-plane end moments ``(M_i, M_j)`` (kip-ft, beam sign
+        convention); zero for pinned joints."""
+        return frame_analysis.end_moments(self.result, self._eid(m), "y")
+
+    def secondary_stress_ksi(self, m: Member) -> float:
+        """Largest end bending stress ``M c / I`` with ``c = depth / 2``."""
+        sec = m.section
+        if not (sec.i_in4 and sec.depth_in):
+            raise ValueError(f"{m.name}: needs TrussSection.i_in4 and depth_in")
+        moment = max(abs(v) for v in self.end_moments(m)) * 12.0
+        return moment * (sec.depth_in / 2.0) / sec.i_in4
+
+    def deflection_in(self, node: str) -> tuple[float, float]:
+        """Panel-point displacement ``(dx, dz)`` in inches."""
+        d = self.result.displacements[node]
+        return d[0] * 12.0, d[2] * 12.0

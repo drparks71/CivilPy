@@ -129,6 +129,14 @@ civilpy.structural.flexural\_stress module
    :undoc-members:
    :show-inheritance:
 
+civilpy.structural.frame\_analysis module
+-----------------------------------------
+
+.. automodule:: civilpy.structural.frame_analysis
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
 civilpy.structural.girder\_optimizer module
 -------------------------------------------
 
