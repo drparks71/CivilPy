@@ -396,6 +396,111 @@ def compression_member_resistance(
     )
 
 
+@article("6.8.2.3", "Combined Axial and Flexure")
+def combined_axial_flexure(
+    p_u: float,
+    p_r: float,
+    m_ux: float = 0.0,
+    m_rx: float = math.inf,
+    m_uy: float = 0.0,
+    m_ry: float = math.inf,
+    compression: bool = False,
+) -> CheckResult:
+    """Interaction of axial force and flexure: 6.8.2.3 for tension members,
+    6.9.2.2 for compression members (``compression=True``; pass the
+    already-magnified moments).  With Pu/Pr < 0.2 the sum is
+    ``Pu/(2 Pr) + (Mux/Mrx + Muy/Mry)``, otherwise
+    ``Pu/Pr + 8/9 (Mux/Mrx + Muy/Mry)``; it must not exceed 1.0
+    (``capacity`` 1.0, ``demand`` the sum)."""
+    ratio = abs(p_u) / p_r
+    flex = abs(m_ux) / m_rx + abs(m_uy) / m_ry
+    if ratio < 0.2:
+        total, eq = ratio / 2.0 + flex, "-1"
+    else:
+        total, eq = ratio + 8.0 / 9.0 * flex, "-2"
+    art = "6.9.2.2" if compression else "6.8.2.3"
+    return CheckResult(article=art, name="Combined Axial and Flexure",
+                       capacity=1.0, demand=total,
+                       details={"Pu/Pr": ratio, "M/Mr": flex,
+                                "equation": f"{art}{eq}"})
+
+
+def modified_slenderness(kl_over_r: float, a: float, r_i: float) -> float:
+    """Modified slenderness of a built-up member whose components are
+    connected by lacing, batten plates or intermittent fasteners
+    (Eq. C6.9.4.3.1-1): ``sqrt((KL/r)_o^2 + (a/r_i)^2)`` with ``a`` the
+    connector spacing and ``r_i`` the least radius of gyration of one
+    component."""
+    return math.hypot(kl_over_r, a / r_i)
+
+
+@article("6.12.2.2.1", "Weak-Axis Flexure of I- and H-Shapes")
+def weak_axis_flexure(
+    b_f: float,
+    t_f: float,
+    f_yf: float,
+    z_y: float,
+    s_y: float,
+    m_u: float | None = None,
+) -> CheckResult:
+    """Nominal weak-axis flexural resistance of an I- or H-shape or of two
+    channel flanges joined by a web (6.12.2.2.1): ``Mp = Fyf Zy`` while the
+    flange slenderness bf/2tf <= 0.38 sqrt(E/Fyf), then Eq. 6.12.2.2.1-2
+    toward ``Fyf Sy`` at 0.83 sqrt(E/Fyf).  phi_f = 1.00; kip-in."""
+    lam = b_f / (2.0 * t_f)
+    lam_p = 0.38 * math.sqrt(E_STEEL / f_yf)
+    lam_r = 0.83 * math.sqrt(E_STEEL / f_yf)
+    m_p = f_yf * z_y
+    if lam <= lam_p:
+        m_n, mode = m_p, "compact"
+    elif lam <= lam_r:
+        m_n = (1.0 - (1.0 - s_y / z_y) * (lam - lam_p)
+               / (0.45 * math.sqrt(E_STEEL / f_yf))) * m_p
+        mode = "noncompact"
+    else:
+        raise ValueError(f"flange slenderness {lam:.2f} > lambda_rf {lam_r:.2f}: "
+                         f"slender flange, outside 6.12.2.2.1")
+    return CheckResult(article="6.12.2.2.1",
+                       name="Weak-Axis Flexure of I- and H-Shapes",
+                       capacity=m_n, demand=m_u, phi=1.0,
+                       details={"lambda_f": lam, "lambda_pf": lam_p,
+                                "lambda_rf": lam_r, "Mp": m_p, "mode": mode})
+
+
+def box_torsion_constant(b: float, h: float, t_flange: float, t_web: float) -> float:
+    """St. Venant J of a thin-walled single-cell box with webs ``t_web``
+    apart ``b`` (centre to centre) and flanges ``t_flange`` apart ``h``
+    (AISC Design Guide 9, Table 3.1): ``2 tf tw b^2 h^2 / (tw b + tf h)``."""
+    return 2.0 * t_flange * t_web * b * b * h * h / (t_web * b + t_flange * h)
+
+
+@article("C6.12.2.2.2 (7th Ed.)", "Box-Section Flexure (7th Edition)")
+def box_flexure_7th(
+    f_y: float,
+    s: float,
+    i_y: float,
+    j: float,
+    length: float,
+    m_u: float | None = None,
+    g: float | None = None,
+) -> CheckResult:
+    """Flexural resistance of a box-shaped member by the 7th Edition
+    (2014) commentary of 6.12.2.2.2, the form used for rating and
+    strengthening older laced box members (FHWA HIF-18-042):
+    ``M_CR = (pi/L) sqrt(E Iy G J)`` (Eq. C6.12.2.2.2-1) and
+    ``Mn = Fy S (1 - Fy S / (4 M_CR))`` (Eq. C6.12.2.2.2-4), with
+    G = 0.385 E.  The 9th Edition replaced this with Article 6.12.2.2.2's
+    local-buckling based provisions.  kip-in."""
+    g = 0.385 * E_STEEL if g is None else g
+    m_cr = math.pi / length * math.sqrt(E_STEEL * i_y * g * j)
+    m_y = f_y * s
+    m_n = m_y * (1.0 - m_y / (4.0 * m_cr))
+    return CheckResult(article="C6.12.2.2.2 (7th Ed.)",
+                       name="Box-Section Flexure (7th Edition)",
+                       capacity=m_n, demand=m_u, phi=1.0,
+                       details={"M_CR": m_cr, "My": m_y, "G": g})
+
+
 # Table 6.13.2.8-2 minimum bolt pretension Pt (kip)
 BOLT_PRETENSION = {
     ("A325", 0.625): 19.0, ("A325", 0.75): 28.0, ("A325", 0.875): 39.0,

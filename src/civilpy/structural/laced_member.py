@@ -289,6 +289,39 @@ class LacedMember:
                         source=lac.source))
         return out
 
+    # -- lacing effect on column strength ------------------------------------
+    def connector_spacing_in(self) -> float:
+        """Distance ``a`` between lacing connections along one component:
+        one bar advance ``gauge / tan(inclination)`` for double lacing (the
+        X meets each rivet line every advance), two for single lacing."""
+        lac = self.lacing
+        if lac is None:
+            raise ValueError("no lacing on this member")
+        advance = self.lacing_gauge_in() / math.tan(math.radians(lac.inclination_deg))
+        return advance if lac.double else 2.0 * advance
+
+    def component_radius_in(self) -> float:
+        """Least radius of gyration ``r_i`` of one component -- one web with
+        its two angles (the pieces on one side of the section), about its
+        own centroidal axis parallel to the depth."""
+        rects, _ = builtup.rects(self.spec)
+        side = [r for r in rects if r[2] > 0]
+        a = sum(b * h for b, h, _, _ in side)
+        yc = sum(b * h * y for b, h, y, _ in side) / a
+        zc = sum(b * h * z for b, h, _, z in side) / a
+        i_y = sum(h * b ** 3 / 12 + b * h * (y - yc) ** 2 for b, h, y, _ in side)
+        i_z = sum(b * h ** 3 / 12 + b * h * (z - zc) ** 2 for b, h, _, z in side)
+        return math.sqrt(min(i_y, i_z) / a)
+
+    def modified_slenderness(self, kl_over_r: float) -> float:
+        """Eq. C6.9.4.3.1-1 for this laced member:
+        ``sqrt((KL/r)_o^2 + (a / r_i)^2)`` with ``a`` from the lacing and
+        ``r_i`` from one component (see :func:`civilpy.structural.aashto.
+        lrfd.steel.modified_slenderness`)."""
+        from civilpy.structural.aashto.lrfd.steel import modified_slenderness
+        return modified_slenderness(kl_over_r, self.connector_spacing_in(),
+                                    self.component_radius_in())
+
     # -- tie plates --------------------------------------------------------
     def tie_pieces(self) -> list:
         _rects, (d, _B, _tw, _angles, _covers) = builtup.rects(self.spec)

@@ -21,6 +21,8 @@ Consistent force/moment units in = same units out; RF is dimensionless.
 
 from __future__ import annotations
 
+import math
+
 from civilpy.structural.aashto.lrfd.core import CheckResult, article
 
 # Condition factor phi_c (Table 6A.4.2.3-1), keyed by member condition
@@ -188,3 +190,18 @@ def permit_load_factor(
             f_lo, f_hi = table[lo][band], table[hi][band]
             return f_lo + (f_hi - f_lo) * (adtt - lo) / (hi - lo)
     raise AssertionError("unreachable")
+
+
+@article("6A.6.12.6", "Rivet Shear Resistance")
+def rivet_shear_resistance(d_rivet: float, n_planes: int = 1,
+                           phi_f_r: float = 21.0,
+                           v_u: float | None = None) -> CheckResult:
+    """Factored shear resistance of one rivet for rating: ``phi F_r`` (ksi,
+    the factored rivet shear strength of the MBE table -- 21 ksi for ASTM
+    A141 / A502 Grade 1 rivets, the 2003 LRFR Guide Manual Table 6-14 value
+    used by FHWA HIF-18-042) times the nominal rivet area and the number of
+    shear planes.  ``capacity`` is already factored (phi = 1.0)."""
+    a_r = math.pi * d_rivet ** 2 / 4.0
+    return CheckResult(article="6A.6.12.6", name="Rivet Shear Resistance",
+                       capacity=phi_f_r * a_r * n_planes, demand=v_u,
+                       details={"Ar": a_r, "phiFr": phi_f_r, "Ns": n_planes})
