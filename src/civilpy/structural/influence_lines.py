@@ -326,7 +326,7 @@ class InfluenceLine:
 
     def hl93_effect(self, im: float = 0.33, lane_klf: float = 0.64,
                     rear_spacings=(14.0, 30.0), sign: float = 1.0,
-                    dual_truck: bool = False, dual_gap_step: float = 1.0) -> dict:
+                    dual_truck: bool | str = False, dual_gap_step: float = 1.0) -> dict:
         """Governing HL-93 effect on this line (3.6.1.3): design truck
         (rear-axle spacing swept) with dynamic load allowance, plus lane
         load on the positive regions.  Returns the pieces and the total.
@@ -339,7 +339,11 @@ class InfluenceLine:
         90 % of two design trucks (14 ft rear axles) at least 50 ft apart,
         lead axle of one to rear axle of the other (the gap swept in
         ``dual_gap_step``), plus 90 % of the lane load; the larger governs
-        (``details["dual_truck_governs"]``)."""
+        (``details["dual_truck_governs"]``).  ``dual_truck="contraflexure"``
+        applies it only where the article does, between the points of
+        contraflexure under a uniform load on all spans: sections whose
+        line integrates to a negative effect, for the negative extreme (pass
+        ``True`` for an interior-pier reaction)."""
         sign = 1.0 if sign >= 0 else -1.0
         best_truck = max(
             (self.maximize_axle_train([8.0, 32.0, 32.0], [0.0, 14.0, 14.0 + s],
@@ -362,6 +366,11 @@ class InfluenceLine:
             "total": total,
             "position": truck.position,
         }
+        if dual_truck == "contraflexure":
+            x, y = self.ordinates(2001)
+            area = float(np.trapezoid(y, x))
+            dual_truck = sign < 0 and area < 0.0
+            out["in_negative_region"] = bool(area < 0.0)
         if dual_truck:
             pair = max((self.maximize_axle_train(
                 [8.0, 32.0, 32.0, 8.0, 32.0, 32.0],

@@ -116,3 +116,14 @@ def test_hl93_dual_truck_negative_moment():
     assert r["total"] == pytest.approx(expected, rel=5e-3)
     single = il.hl93_effect(sign=-1)
     assert r["total"] < single["total"]
+
+
+def test_dual_truck_only_between_points_of_contraflexure():
+    beam = ContinuousBeam([0.0, 100.0, 200.0])
+    near_pier = beam.continuous_moment_influence_line(90.0, per_span=200)
+    mid_span = beam.continuous_moment_influence_line(40.0, per_span=200)
+    # uniform load on both spans: contraflexure at 0.75 L from the abutments
+    assert near_pier.hl93_effect(sign=-1, dual_truck="contraflexure")["in_negative_region"]
+    far = mid_span.hl93_effect(sign=-1, dual_truck="contraflexure")
+    assert not far["in_negative_region"] and "dual_truck" not in far
+    assert far["total"] == pytest.approx(mid_span.hl93_effect(sign=-1)["total"])
