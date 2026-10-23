@@ -140,6 +140,15 @@ PERMIT_SPECIAL_FACTORS = {
 }
 
 
+#: Routine permits rated with the one-lane distribution factor, all ADTTs
+#: (Table 6A.4.5.4.2a-1; SBDH Ch. 18 Table 7).
+PERMIT_ROUTINE_ONE_LANE = 1.40
+
+#: Emergency vehicles EV2 / EV3 (FHWA memorandum, November 3 2016): rated at
+#: the legal-load level with gamma_LL = 1.30, in one lane of one direction.
+EMERGENCY_VEHICLE_LOAD_FACTOR = 1.30
+
+
 @article("6A.4.5.4.2a", "Permit Live Load Factor")
 def permit_load_factor(
     permit_type: str = "routine",
@@ -148,6 +157,10 @@ def permit_load_factor(
     axle_length_ft: float | None = None,
     gvw_over_al: float | None = None,
     factors: dict | None = None,
+    *,
+    one_lane: bool = False,
+    refined_analysis: bool = False,
+    crawl_speed: bool = False,
 ) -> float:
     """Live load factor for permit ratings (Table 6A.4.5.4.2a-1).
 
@@ -164,14 +177,35 @@ def permit_load_factor(
     the top row.  ``factors`` overrides the published table for agency
     customizations (same shapes as ``PERMIT_ROUTINE_FACTORS`` /
     ``PERMIT_SPECIAL_FACTORS``).
+
+    Adjustments (MBE 6A.4.5.4.2a; SBDH Ch. 18 Sec. 6.5.4.3):
+    ``one_lane`` -- a routine permit with the one-lane distribution factor
+    takes 1.40 at all ADTTs; ``refined_analysis`` -- routine permits add
+    0.10 (two permit trucks in adjacent lanes) and a special permit mixed
+    with traffic takes 1.00 on the permit truck (with 1.10 on the governing
+    legal truck in the adjacent lane, not returned here); ``crawl_speed``
+    -- an escorted special permit at crawl speed with no dynamic load
+    allowance is increased by 1.05.
     """
     if permit_type != "routine":
         table = factors or PERMIT_SPECIAL_FACTORS
         if permit_type not in table:
             raise ValueError(f"unknown permit type {permit_type!r}; "
                              f"expected 'routine' or one of {sorted(table)}")
-        return table[permit_type]
+        if refined_analysis and permit_type in ("single_trip_mixed", "multiple_trip_mixed"):
+            return 1.00
+        f = table[permit_type]
+        if crawl_speed and permit_type == "single_trip_escorted":
+            f *= 1.05
+        return f
+    if one_lane:
+        return PERMIT_ROUTINE_ONE_LANE
+    if refined_analysis:
+        return _routine_permit(adtt, gvw_kips, axle_length_ft, gvw_over_al, factors) + 0.10
+    return _routine_permit(adtt, gvw_kips, axle_length_ft, gvw_over_al, factors)
 
+
+def _routine_permit(adtt, gvw_kips, axle_length_ft, gvw_over_al, factors):
     if gvw_over_al is None:
         if gvw_kips is None or axle_length_ft is None:
             raise ValueError("routine permits need gvw_over_al, or "
@@ -190,6 +224,78 @@ def permit_load_factor(
             f_lo, f_hi = table[lo][band], table[hi][band]
             return f_lo + (f_hi - f_lo) * (adtt - lo) / (hi - lo)
     raise AssertionError("unreachable")
+
+
+@article("6A.6.4.2.2", "Service II Flange Stress Limit")
+def service_ii_flange_limit(f_yf: float, r_h: float = 1.0,
+                            composite: bool = True) -> float:
+    """Allowable flange stress f_R for the Service II (permanent
+    deformation) rating of steel girders (MBE 6A.6.4.2.2 via LRFD
+    6.10.4.2.2): 0.95 R_h F_yf for both flanges of composite sections,
+    0.80 R_h F_yf for noncomposite sections."""
+    return (0.95 if composite else 0.80) * r_h * f_yf
+
+
+#: Evaluation live-load factors by level (Table 6A.4.2.2-1, SBDH Ch. 18
+#: Table 3): Strength I design inventory / operating, Service II.
+SERVICE_II_LL = {"inventory": 1.30, "operating": 1.00, "legal": 1.30, "permit": 1.00}
+
+
+def steel_member_rating(
+    *,
+    level: str = "inventory",
+    moment: tuple | None = None,
+    shear: tuple | None = None,
+    service_stress: tuple | None = None,
+    phi_moment: float = 1.0,
+    phi_shear: float = 1.0,
+    condition: str = "good",
+    system: str = "other_girder_slab",
+    gamma_ll: float | None = None,
+    adtt: float | None = None,
+) -> dict[str, CheckResult]:
+    """The steel-member LRFR flow of MBE 6A / SBDH Ch. 18 for one rating
+    level: Strength (flexure and shear) and Service II rating factors.
+
+    ``moment`` / ``shear`` are ``(nominal capacity, DC, DW, LL+IM)`` in any
+    consistent units, the capacity *nominal* (``phi_moment`` / ``phi_shear``
+    applied here); ``service_stress`` is ``(f_R, f_DC, f_DW, f_LL+IM)`` in
+    ksi with f_R from :func:`service_ii_flange_limit`.
+
+    ``level``: ``"inventory"`` / ``"operating"`` (HL-93, Strength I 1.75 /
+    1.35), ``"legal"`` (Strength I at :func:`legal_load_factor` of
+    ``adtt``), ``"permit"`` (Strength II -- pass ``gamma_ll`` from
+    :func:`permit_load_factor`), or ``"emergency"`` (1.30).  The condition
+    factor applies to both strength checks, the system factor to flexure
+    only (shear is brittle: phi_s = 1.0, MBE C6A.4.2.4); neither applies
+    at Service II."""
+    if gamma_ll is None:
+        gamma_ll = {"inventory": GAMMA_LL_INVENTORY, "operating": GAMMA_LL_OPERATING,
+                    "legal": legal_load_factor(adtt),
+                    "emergency": EMERGENCY_VEHICLE_LOAD_FACTOR}.get(level)
+        if gamma_ll is None:
+            raise ValueError("permit ratings need gamma_ll (permit_load_factor)")
+    out = {}
+    if moment is not None:
+        rn, dc, dw, ll = moment
+        out["flexure"] = rating_factor(rn, dc, ll, dw=dw, phi=phi_moment, level=level,
+                                       gamma_ll=gamma_ll, condition=condition, system=system)
+    if shear is not None:
+        rn, dc, dw, ll = shear
+        out["shear"] = rating_factor(rn, dc, ll, dw=dw, phi=phi_shear, level=level,
+                                     gamma_ll=gamma_ll, condition=condition,
+                                     system="redundant_subsystem")
+    if service_stress is not None:
+        f_r, f_dc, f_dw, f_ll = service_stress
+        sll = SERVICE_II_LL["legal" if level == "emergency" else level]
+        out["service II"] = rating_factor(f_r, f_dc, f_ll, dw=f_dw, level=level, gamma_ll=sll,
+                                          gamma_dc=1.0, gamma_dw=1.0, service=True)
+    for k, r in out.items():
+        r.details["limit"] = k
+    if out:
+        gov = min(out, key=lambda k: out[k].capacity)
+        out["governing"] = out[gov]
+    return out
 
 
 @article("6A.6.12.6", "Rivet Shear Resistance")

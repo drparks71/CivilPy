@@ -309,3 +309,183 @@ def rivets_removed_capacity(n_remaining: int, r_rivet: float,
 def fasteners_to_develop(p_r: float, r_fastener: float) -> int:
     """Fasteners needed to develop a plate force ``p_r`` (rounded up)."""
     return math.ceil(p_r / r_fastener - 1e-9)
+
+
+# ── plate-girder flexural strengthening (FHWA HIF-18-043) ──────────────────
+
+
+@dataclass(frozen=True)
+class Piece:
+    """A rectangle (or negative area: section loss, bolt holes) of a girder
+    cross section: area (in^2, negative to remove), centroid ``y`` (in.,
+    any datum), own moment of inertia ``io`` (in^4)."""
+
+    area: float
+    y: float
+    io: float = 0.0
+    label: str = ""
+
+    @classmethod
+    def plate(cls, b: float, t: float, y: float, label: str = "") -> "Piece":
+        return cls(b * t, y, b * t ** 3 / 12.0, label)
+
+
+def section_from_pieces(pieces) -> dict:
+    """``{"A", "y", "I"}`` of a set of :class:`Piece` (parallel axis about
+    the net centroid)."""
+    a = sum(p.area for p in pieces)
+    y = sum(p.area * p.y for p in pieces) / a
+    i = sum(p.io + p.area * (p.y - y) ** 2 for p in pieces)
+    return {"A": a, "y": y, "I": i}
+
+
+def effective_net_width(gross_width: float, hole: float, n_holes: int,
+                        staggers=(), cap: float = 0.85) -> float:
+    """Net width of a bolted plate for section properties, no more than
+    ``cap`` times the gross width (LRFD 6.13.5.2's 0.85 Ag limit, as
+    HIF-18-043 applies it to cover-plated flanges)."""
+    return min(staggered_net_width(gross_width, hole, n_holes, staggers),
+               cap * gross_width)
+
+
+@dataclass
+class StrengthenedGirder:
+    """A girder in flexure with plates added in service (HIF-18-043).
+
+    ``existing`` are the pieces of the as-inspected section (section loss
+    and the new bolt holes as negative pieces), ``added`` the new plates
+    (with their holes).  The DC moment is locked into ``existing``; DW and
+    LL+IM act on the whole.  ``fibers`` names the extreme fibers checked,
+    ``{name: (y, material)}`` with material ``"existing"`` or ``"added"``.
+    Stresses are moment / (I / |y - y_bar|), ksi for kip-ft moments."""
+
+    existing: list[Piece]
+    added: list[Piece]
+    fibers: dict
+    fy_existing: float
+    fy_added: float
+    phi_f: float = 1.0
+    #: the strengthened section's pieces when they are not simply
+    #: ``existing + added`` (e.g. the bolt holes of the combined plies
+    #: replace the existing section's own hole pieces)
+    strengthened: list[Piece] | None = None
+
+    def stresses(self, m_dc: float, m_dw: float, m_ll: float) -> dict:
+        e = section_from_pieces(self.existing)
+        s = section_from_pieces(self.strengthened if self.strengthened is not None
+                                else self.existing + self.added)
+        out = {}
+        for name, (y, mat) in self.fibers.items():
+            s_e = e["I"] / abs(y - e["y"])
+            s_s = s["I"] / abs(y - s["y"])
+            out[name] = {"material": mat,
+                         "S_existing": s_e, "S_strengthened": s_s,
+                         "f_DC": (m_dc * 12.0 / s_e) if mat == "existing" else 0.0,
+                         "f_DW": m_dw * 12.0 / s_s, "f_LL": m_ll * 12.0 / s_s}
+        return out
+
+    def rating_factors(self, m_dc: float, m_dw: float, m_ll: float,
+                       gammas=GAMMAS_STRENGTH_I) -> dict:
+        """RF at every fiber, ``(phi_f Fy - g_DC f_DC - g_DW f_DW) /
+        (g_LL f_LL)`` with each material's own Fy."""
+        g_dc, g_dw, g_ll = gammas
+        out = {}
+        for name, st in self.stresses(m_dc, m_dw, m_ll).items():
+            fy = self.fy_existing if st["material"] == "existing" else self.fy_added
+            f_r = self.phi_f * fy
+            st["f_u"] = g_dc * st["f_DC"] + g_dw * st["f_DW"] + g_ll * st["f_LL"]
+            st["RF"] = (f_r - g_dc * st["f_DC"] - g_dw * st["f_DW"]) / (g_ll * st["f_LL"])
+            out[name] = st
+        return out
+
+
+def eccentric_bolt_group(bolts, v: float, m: float) -> dict:
+    """Elastic (vector) method for a bolt group under direct shear ``v``
+    (kip, vertical) and moment ``m`` (kip-in.) about the group centroid:
+    ``bolts`` are ``(x, y)`` from the centroid.  Returns the polar moment
+    ``J = sum(x^2 + y^2)`` and the largest resultant bolt force."""
+    n = len(bolts)
+    j = sum(x * x + y * y for x, y in bolts)
+    worst = (0.0, None)
+    for x, y in bolts:
+        fx = -m * y / j
+        fy = v / n + m * x / j
+        r = math.hypot(fx, fy)
+        if r > worst[0]:
+            worst = (r, (x, y))
+    return {"J": j, "R_max": worst[0], "bolt": worst[1], "n": n}
+
+
+def shear_flow_bolt_force(v: float, q: float, i: float, pitch: float,
+                          bolts_per_row: int = 1) -> float:
+    """Force per bolt from horizontal shear flow ``V Q / I`` over one
+    ``pitch``, shared by ``bolts_per_row``."""
+    return v * q / i * pitch / bolts_per_row
+
+
+def splice_web_design_shear(v_u: float, phi_vn: float) -> float:
+    """Design shear for a web splice (LRFD 6.13.6.1.4b): 1.5 V_u when
+    V_u < 0.5 phi_v V_n, else the average 0.5 (V_u + phi_v V_n)."""
+    return 1.5 * v_u if v_u < 0.5 * phi_vn else 0.5 * (v_u + phi_vn)
+
+
+# ── composite action by retrofit: post-installed shear connectors ──────────
+
+
+def post_installed_connector_strength(d: float, f_u: float) -> float:
+    """Static strength (kips) of one post-installed shear connector -- a
+    double-nut bolt, high-tension friction-grip bolt or adhesive anchor
+    through the existing deck into the top flange -- taken as
+    ``0.5 F_u A_sc`` (Kwon, Engelhardt and Klingner, J. Bridge Eng. 2010;
+    TxDOT 0-4124), the basis of the partial-composite retrofits in the
+    UT Austin study the NSBA library carries."""
+    return 0.5 * f_u * math.pi * d * d / 4.0
+
+
+@dataclass(frozen=True)
+class PartialCompositeResult:
+    mp: float                 # kip-in.
+    c_slab: float             # slab compression force, kips
+    composite_ratio: float    # c_slab over the full-composite slab force
+    y_pna: float              # PNA depth below the top of the slab, in.
+    a: float                  # depth of the concrete stress block, in.
+
+
+def partial_composite_plastic_moment(*, b_c: float, t_c: float, d_web: float, t_w: float,
+                                     b_t: float, t_t: float, f_y: float, b_s: float,
+                                     t_s: float, f_c: float, sum_qn: float,
+                                     t_haunch: float = 0.0) -> PartialCompositeResult:
+    """Plastic moment of an I-girder (top flange ``b_c x t_c``, web
+    ``d_web x t_w``, bottom flange ``b_t x t_t``, one ``f_y``) composite
+    with a slab through connectors of total strength ``sum_qn`` between the
+    points of zero and maximum moment.  The slab force is the least of the
+    connector strength, the slab's ``0.85 f'c b_s t_s`` and the steel's
+    ``A_s F_y`` (the AISC 360 I3.2a plastic stress distribution, which
+    reduces to LRFD Appendix D6.1 at full composite action and to the
+    steel plastic moment with no connectors)."""
+    a_c, a_w, a_t = b_c * t_c, d_web * t_w, b_t * t_t
+    a_s = a_c + a_w + a_t
+    c_full = min(0.85 * f_c * b_s * t_s, a_s * f_y)
+    c = max(0.0, min(sum_qn, c_full))
+    a = c / (0.85 * f_c * b_s) if c > 0 else 0.0
+    top = t_s + t_haunch                       # top of steel below the slab top
+    # steel above the PNA in compression: A_above = (A_s Fy - C) / (2 Fy)
+    a_above = (a_s * f_y - c) / (2.0 * f_y)
+    pieces = [(a_c, top, top + t_c), (a_w, top + t_c, top + t_c + d_web),
+              (a_t, top + t_c + d_web, top + t_c + d_web + t_t)]
+    remaining, y_pna = a_above, top
+    for area, y0, y1 in pieces:
+        if remaining <= area + 1e-12:
+            y_pna = y0 + (y1 - y0) * (remaining / area if area else 0.0)
+            break
+        remaining -= area
+    m = c * (y_pna - a / 2.0)
+    for area, y0, y1 in pieces:
+        h = y1 - y0
+        above = min(max(y_pna - y0, 0.0), h)
+        below = h - above
+        w = area / h
+        # compression part above the PNA, tension part below it
+        m += f_y * w * above * (y_pna - (y0 + above / 2.0))
+        m += f_y * w * below * ((y0 + above + below / 2.0) - y_pna)
+    return PartialCompositeResult(m, c, c / c_full if c_full else 0.0, y_pna, a)

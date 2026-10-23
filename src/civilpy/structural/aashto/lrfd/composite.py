@@ -248,3 +248,54 @@ def design_rolled_splice(left_label: str, right_label: str, loads: "SpliceLoads"
         stress_cases=cg.stress_cases(loads),
         **splice_kwargs)
     return design_splice(inp)
+
+
+def transformed_composite_section(*, steel_area: float, steel_i: float, steel_depth: float,
+                                  b_eff: float = 0.0, t_slab: float = 0.0, t_haunch: float = 0.0,
+                                  n: float = 8.0, rebar_area: float = 0.0,
+                                  rebar_depth: float | None = None,
+                                  negative: bool = False) -> dict:
+    """Elastic section of a symmetric rolled (or doubly symmetric) steel
+    beam composite with a deck, in inches.
+
+    Positive flexure: the slab transformed by ``n`` (pass ``3 n`` for the
+    long-term section); when the neutral axis falls in the slab, the
+    concrete below it is dropped (cracked) and the compression depth comes
+    from the first-moment balance.  Negative flexure (``negative=True``):
+    the steel with the longitudinal deck reinforcement ``rebar_area`` at
+    ``rebar_depth`` below the top of the slab, concrete ignored.
+
+    Returns ``y`` (neutral axis above the steel centroid), ``I``, the
+    compression depth in the slab ``x``, and section moduli to the top of
+    the slab, the top and the bottom of the steel."""
+    half = steel_depth / 2.0
+    top_steel_to_slab_top = t_haunch + t_slab
+    if negative:
+        if rebar_area <= 0 or rebar_depth is None:
+            raise ValueError("negative flexure needs rebar_area and rebar_depth")
+        y_r = half + top_steel_to_slab_top - rebar_depth
+        a = steel_area + rebar_area
+        y = rebar_area * y_r / a
+        i = steel_i + steel_area * y ** 2 + rebar_area * (y_r - y) ** 2
+        return {"y": y, "I": i, "x": 0.0, "S_top_slab": None,
+                "S_top_steel": i / (half - y), "S_bottom_steel": i / (half + y)}
+    b_t = b_eff / n
+    d_top = half + top_steel_to_slab_top            # steel centroid below slab top
+    # full slab first
+    a_c = b_t * t_slab
+    y_c = half + t_haunch + t_slab / 2.0
+    y = a_c * y_c / (steel_area + a_c)
+    x = t_slab
+    if y > half + t_haunch:                         # NA in the slab: crack below it
+        # b_t x^2 / 2 = A_s (d_top - x)  ->  x from the quadratic
+        aq, bq, cq = b_t / 2.0, steel_area, -steel_area * d_top
+        x = (-bq + math.sqrt(bq * bq - 4 * aq * cq)) / (2 * aq)
+        y = d_top - x
+        i = b_t * x ** 3 / 3.0 + steel_i + steel_area * y ** 2
+    else:
+        i = (b_t * t_slab ** 3 / 12.0 + a_c * (y_c - y) ** 2
+             + steel_i + steel_area * y ** 2)
+    top_slab = d_top - y
+    return {"y": y, "I": i, "x": x, "S_top_slab": i / top_slab,
+            "S_top_steel": i / abs(half - y) if abs(half - y) > 1e-12 else math.inf,
+            "S_bottom_steel": i / (half + y)}

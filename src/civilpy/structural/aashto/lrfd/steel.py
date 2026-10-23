@@ -829,6 +829,7 @@ def web_shear_resistance(
     t_fc: float | None = None,
     b_ft: float | None = None,
     t_ft: float | None = None,
+    web_loss_area: float = 0.0,
 ) -> CheckResult:
     """Nominal web shear resistance Vn (6.10.9).
 
@@ -838,8 +839,13 @@ def web_shear_resistance(
     2*D*tw/(bfc*tfc + bft*tft) <= 2.5.  ``d_web`` is the web depth D (in),
     ``d_o`` the transverse stiffener spacing (in), ``v_u`` the factored
     shear demand (kip).
+
+    ``web_loss_area`` (in^2) is corroded web area lost over the panel: the
+    plastic shear force is taken on the remaining area while k and C stay
+    those of the full web, the usual rating treatment of localized loss
+    (FHWA HIF-18-043).
     """
-    v_p = 0.58 * f_yw * d_web * t_w  # plastic shear force (6.10.9.2-2)
+    v_p = 0.58 * f_yw * (d_web * t_w - web_loss_area)  # plastic shear (6.10.9.2-2)
     k = 5.0 if d_o is None else 5.0 + 5.0 / (d_o / d_web) ** 2  # 6.10.9.3.2-7
 
     slenderness = d_web / t_w
