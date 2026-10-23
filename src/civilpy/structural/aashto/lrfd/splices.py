@@ -193,6 +193,15 @@ class SplicePlateForces:
     ratio_outer: float
 
 
+def plate_area_difference(a_outer: float, a_inner: float) -> float:
+    """Fractional difference between the outer and inner splice-plate areas,
+    relative to their mean -- the measure behind the C6.13.6.1.3b 10 % rule
+    (double shear on Pfy/2 each within it, single shear on the larger
+    area-apportioned force beyond it), as the NSBA Splice workbook computes
+    it."""
+    return abs(a_outer - a_inner) / (0.5 * (a_outer + a_inner))
+
+
 @article("6.13.6.1.3b", "Splice Plate Design Force")
 def splice_plate_design_force(
     p_fy: float,
@@ -204,8 +213,7 @@ def splice_plate_design_force(
     10%, the force is divided equally (double shear, Pfy/2 each); otherwise
     it is split in proportion to plate area."""
     total = a_g_outer + a_g_inner
-    pct_diff = abs(a_g_outer - a_g_inner) / max(a_g_outer, a_g_inner)
-    if pct_diff <= 0.10:
+    if plate_area_difference(a_g_outer, a_g_inner) <= 0.10:
         return SplicePlateForces(outer=0.5 * p_fy, inner=0.5 * p_fy,
                                  double_shear=True, ratio_outer=0.5)
     ratio_outer = a_g_outer / total

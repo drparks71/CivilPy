@@ -502,12 +502,12 @@ class TestSbdhCh14Example1:
         assert c["inner plate block shear"].factored_capacity == pytest.approx(1212, rel=0.002)
 
     def test_girder_flange_block_shear_uses_controlling_side_material(self):
-        # The right (HPS 70W, 1.0 in) flange governs Mode 1: 2,532 kip.  The
-        # Mode 2 tension planes use the splice-plate edge (2.0 in) rather than
-        # the wider flange's 3.0 in, so civilpy is below the handbook's 1,818.
+        # The right (HPS 70W, 1.0 in) flange governs: Mode 1 2,532 kip; Mode 2
+        # 1,818 kip with its tension planes out to the 20 in flange's own
+        # 3.0 in edge (the 18 in outer plate's edge is 2.0 in).
         c = _checks(self.d.bottom_flange)
         assert c["girder flange block shear (Mode 1)"].factored_capacity == pytest.approx(2532, rel=0.002)
-        assert c["girder flange block shear (Mode 2)"].factored_capacity <= 1818
+        assert c["girder flange block shear (Mode 2)"].factored_capacity == pytest.approx(1818, rel=0.002)
 
     def test_bearing_bolt_shear_governs(self):
         # 4 end + 24 interior holes, filler-reduced bolt shear governs: 1,284.5 kip
@@ -712,3 +712,103 @@ def test_stress_based_forces_follow_6_13_6_1_4c(f_top, f_bot):
         assert out[k] == pytest.approx(stress * area)
         assert out[k] >= 37.5 * min(a_e[k], a_g[k])
     assert out["cases"][0]["controlling"] == ctrl
+
+
+# ---------------------------------------------------------------------------
+# AISC-NSBA Standard Plans for Steel Bridges, 1-span (January 2025, rev. 0):
+# girder plates at the splice (Segment A / B tables) and the Bolted Field
+# Splice Dimensions tables (sheets 34-35); 1 in. A325 bolts, Gr 50W plates.
+# The plans give no splice moments, so only the load-independent flange
+# design is compared: bolts per side = rows x gage lines.  The cases cover
+# the 10 % plate-area rule (single shear), 6 gage lines, HPS 70W, fillers.
+# ---------------------------------------------------------------------------
+
+_W, _H = "Grade 50W", "HPS Grade 70W"
+# key: (A-side top, B-side top, A-side bottom, B-side bottom: (b, t, grade)),
+#      top plates (t_in, b_in, t_out, b_out), top gage lines,
+#      bottom plates, bottom gage lines, (top bolts, bottom bolts) on the plans
+_STANDARD_PLANS = {
+    "8-160": (((18, 1.0, _W), (18, 1.25, _W), (22, 1.5, _W), (22, 1.5, _W)),
+              (0.625, 8.0, 0.625, 18.0), 4, (1.0, 10.0, 1.0, 22.0), 4, (12, 20)),
+    "8-170": (((19, 1.0, _W), (19, 1.25, _W), (23, 1.5, _W), (23, 1.5, _W)),
+              (0.625, 8.0, 0.625, 19.0), 4, (0.875, 10.0, 0.875, 23.0), 4, (16, 24)),
+    "10-250": (((22, 1.25, _W), (28, 1.25, _W), (22, 2.5, _W), (30, 1.5, _W)),
+               (0.75, 10.0, 0.75, 22.0), 4, (1.375, 10.0, 1.375, 22.0), 4, (16, 36)),
+    "12-220": (((24, 1.25, _W), (28, 1.5, _W), (24, 2.5, _W), (28, 2.0, _W)),
+               (0.75, 10.5, 0.75, 24.0), 4, (1.5, 10.5, 1.5, 24.0), 4, (24, 44)),
+    "12-290": (((28, 1.75, _W), (28, 2.0, _H), (30, 2.75, _W), (30, 2.0, _H)),
+               (1.125, 12.5, 1.125, 28.0), 6, (1.5, 13.5, 1.5, 30.0), 6, (36, 54)),
+    "14-170": (((22, 1.5, _W), (24, 2.0, _W), (30, 2.0, _W), (30, 2.0, _W)),
+               (1.0, 10.0, 1.0, 22.0), 4, (1.25, 14.0, 1.25, 30.0), 6, (24, 36)),
+    "14-270": (((26, 2.0, _W), (30, 2.0, _W), (30, 2.75, _W), (30, 2.0, _H)),
+               (1.25, 12.0, 1.25, 26.0), 6, (1.5, 14.0, 1.5, 30.0), 6, (30, 54)),
+    "14-290": (((28, 2.0, _W), (32, 2.25, _W), (35, 3.0, _W), (35, 2.25, _H)),
+               (1.25, 12.5, 1.25, 28.0), 6, (1.625, 16.0, 1.625, 35.0), 6, (36, 72)),
+}
+
+
+def _standard_plans(key):
+    (ta, tb, ba, bb), top_pl, top_lines, bot_pl, bot_lines, _ = _STANDARD_PLANS[key]
+    fl = lambda p: Flange(p[2], p[1], p[0])
+    side = lambda top, bot: GirderSide(fl(top), fl(bot), _W, 0.75, 100.0, stiffened=False)
+    return design_splice(SpliceInput(
+        left=side(ta, ba), right=side(tb, bb), loads=SpliceLoads(),
+        bolts=BoltSpec("A325", 1.0, flange_threads_excluded=True, web_threads_excluded=False),
+        top_plates=PlatePair(_W, *top_pl), bottom_plates=PlatePair(_W, *bot_pl),
+        web_plate=WebPlate(_W, 0.5), deck_thickness=8.0, deck_eff_width=96.0,
+        top_flange_rows=top_lines, bottom_flange_rows=bot_lines, bolt_spacing=3.0,
+        flange_edge=1.5, flange_end=1.5, girder_gap=0.25, design_year=2024))
+
+
+@pytest.mark.parametrize("key", sorted(_STANDARD_PLANS))
+def test_standard_plans_flange_bolt_counts(key):
+    d = _standard_plans(key)
+    assert (d.top_flange.total_bolts, d.bottom_flange.total_bolts) == _STANDARD_PLANS[key][-1]
+
+
+@pytest.mark.parametrize("key", sorted(set(_STANDARD_PLANS) - {"8-170"}))
+def test_standard_plans_flange_checks_pass(key):
+    # 8-170's inner plates sit at 0.998 of net-section fracture with the
+    # exact phi_u/phi_y; the plans round the coefficient to 0.84.
+    d = _standard_plans(key)
+    failed = [c.name for comp in (d.top_flange, d.bottom_flange) for c in comp.checks
+              if c.ok is False and not c.advisory and c.name != "composite slab crushing"]
+    assert failed == []
+
+
+@pytest.mark.parametrize("key", sorted(_STANDARD_PLANS))
+def test_ten_percent_rule_puts_bolts_in_single_shear(key):
+    # Plates more than 10 % apart in area (about their mean) are checked in
+    # single shear on the larger area-apportioned force (SBDH Ch. 14
+    # 3.3.3.1.3.1); within 10 %, double shear on Pfy.
+    from civilpy.structural.aashto.lrfd.splices import plate_area_difference
+    d = _standard_plans(key)
+    for comp, pl in ((d.top_flange, _STANDARD_PLANS[key][1]), (d.bottom_flange, _STANDARD_PLANS[key][3])):
+        a_in, a_out = 2 * pl[0] * pl[1], pl[2] * pl[3]
+        single = plate_area_difference(a_out, a_in) > 0.10
+        assert comp.extra["single_shear"] is single
+        share = max(a_in, a_out) / (a_in + a_out) if single else 1.0
+        assert comp.extra["count_force"] == pytest.approx(comp.design_force * share)
+
+
+@pytest.mark.parametrize("lines", [2, 4, 6, 8])
+def test_block_shear_tension_planes_span_the_gage_lines(lines):
+    # Mode 2 tears out the whole flange: two tension planes, each across
+    # the lines on one side of the web out to the flange edge, through
+    # (lines/2 - 1/2) holes; Mode 1 tears out each side's group between its
+    # outer lines through (lines/2 - 1) holes.
+    inp = _sbdh_example_1(bottom_flange_rows=lines)
+    d = design_splice(inp)
+    b = d.bottom_flange
+    per_side = lines // 2
+    hole = b.extra["hole_dia"]
+    t, fy, fu = 1.0, 70.0, 85.0               # the governing right flange (HPS 70W)
+    flange_edge = b.edge + (20.0 - inp.bottom_plates.outer_width) / 2
+    l_shear = b.end + (b.extra["cols"] - 1) * b.pitch
+    a_vg = 2 * l_shear * t
+    a_vn = a_vg - 2 * (b.extra["cols"] - 0.5) * hole * t
+    a_tn = 2 * ((per_side - 1) * b.gage_bolts + flange_edge - (per_side - 0.5) * hole) * t
+    want = 0.8 * min(0.58 * fu * a_vn + fu * a_tn, 0.58 * fy * a_vg + fu * a_tn)
+    got = _checks(b)["girder flange block shear (Mode 2)"]
+    # the thinner HPS 70W right flange is the weaker side for every layout
+    assert got.factored_capacity == pytest.approx(want)
