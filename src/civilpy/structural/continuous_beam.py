@@ -314,6 +314,49 @@ class ContinuousBeam:
             positions, etas, length=self.length,
             label=f"M @ {x_section:.1f}")
 
+    def _span_positions(self, per_span: int) -> np.ndarray:
+        """Unit-load positions with every support on the grid."""
+        pts = [np.linspace(a, b, per_span + 1)[:-1]
+               for a, b in zip(self.supports[:-1], self.supports[1:])]
+        return np.append(np.concatenate(pts), self.supports[-1])
+
+    def _influence(self, effect, label: str, per_span: int, at=None) -> InfluenceLine:
+        pos = self._span_positions(per_span)
+        if at is not None:            # either side of a section: shear jumps there
+            eps = 1e-6 * self.length
+            pos = np.unique(np.clip(np.append(pos, [at - eps, at + eps]),
+                                    self.supports[0], self.supports[-1]))
+        il = influence_line_from_ordinates(
+            pos - self.supports[0], [effect([_Point(1.0, p)]) for p in pos],
+            length=self.length, label=label)
+        il.supports = [s - self.supports[0] for s in self.supports]
+        return il
+
+    def shear_influence_line(self, x_section: float, *, side: str = "left",
+                             per_span: int = 400) -> InfluenceLine:
+        """Influence line for the shear at ``x_section``: the left-limit
+        (``side="left"``) or the right-limit shear, so a section at a support
+        gives the shear in the span on either side of it."""
+        dx = 1e-7 * self.length
+        x = x_section if side == "left" else x_section + dx
+        return self._influence(lambda ld: self.shear_at(x, ld),
+                               f"V @ {x_section:.1f} ({side})", per_span, at=x_section)
+
+    def reaction_influence_line(self, support: int, *, per_span: int = 400
+                                ) -> InfluenceLine:
+        """Influence line for the reaction (up +) at support index ``support``."""
+        return self._influence(lambda ld: self.reactions(ld)[support],
+                               f"R{support}", per_span)
+
+    def continuous_moment_influence_line(self, x_section: float, *,
+                                         per_span: int = 400) -> InfluenceLine:
+        """:meth:`moment_influence_line` on the support-aligned grid, carrying
+        the span boundaries (``il.supports``) that
+        :meth:`InfluenceLine.hs20_44_effect` needs for the second
+        concentrated load of a negative-moment lane loading."""
+        return self._influence(lambda ld: self.moment_at(x_section, ld),
+                               f"M @ {x_section:.1f}", per_span)
+
 
 @dataclass
 class EnvelopeExtreme:

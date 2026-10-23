@@ -354,6 +354,47 @@ class InfluenceLine:
             "position": truck.position,
         }
 
+    def hs20_44_effect(self, sign: float = 1.0, concentrated: str = "moment",
+                       second_concentrated: bool = False,
+                       rear_spacings=np.arange(14.0, 30.01, 0.5),
+                       lane_klf: float = 0.64, step: float = 0.05) -> dict:
+        """Governing HS20-44 effect on this line, AASHTO Standard
+        Specifications 3.7 / 3.11 (the AASHO HS20-44 loading of older
+        designs): the HS20 truck (8-32-32 kip, rear axle spacing swept over
+        14-30 ft) or the lane loading -- 0.64 klf on the regions of the
+        wanted sign plus one concentrated load, 18 kip for moment or 26 kip
+        for shear and reactions (``concentrated``), at the extreme ordinate.
+        ``second_concentrated`` adds the second 18 kip load of 3.11.3 in one
+        other span for negative moment in continuous spans (needs
+        ``self.supports``, as the :class:`ContinuousBeam` influence lines
+        carry).  No impact; one lane.  ``step`` is the truck stepping
+        increment (ft); a shear line jumps at its section, so a fine step
+        puts an axle on the jump.  Returns truck, lane and the governing
+        value."""
+        sign = 1.0 if sign >= 0 else -1.0
+        truck = max((self.maximize_axle_train([8.0, 32.0, 32.0], [0.0, 14.0, 14.0 + s],
+                                              step=step, sign=sign) for s in rear_spacings),
+                    key=lambda r: sign * r.value)
+        x, y = self.ordinates(4001)
+        part = np.clip(sign * y, 0.0, None)
+        p = 18.0 if concentrated == "moment" else 26.0
+        lane = lane_klf * float(np.trapezoid(part, x)) + p * float(part.max())
+        if second_concentrated:
+            supports = getattr(self, "supports", None)
+            if supports is None:
+                raise ValueError("second_concentrated needs span boundaries (il.supports)")
+            k = int(np.argmax(part))
+            peaks = []
+            for a, b in zip(supports[:-1], supports[1:]):
+                inside = (x >= a) & (x <= b)
+                if not (a <= x[k] <= b):
+                    peaks.append(float(part[inside].max()))
+            lane += p * max(peaks, default=0.0)
+        lane *= sign
+        governing = truck.value if sign * truck.value >= sign * lane else lane
+        return {"truck": truck.value, "lane": lane, "total": governing,
+                "lane_governs": governing == lane}
+
     # ── Visualization ─────────────────────────────────────────────────────
 
     def plot(self, ax=None, n: int = 1001, axle_train=None):
