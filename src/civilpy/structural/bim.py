@@ -518,6 +518,7 @@ TRUSS_MEMBER_TYPES = (
 HISTORIC_STEEL = {
     "silicon 1917-1936": (45.0, 80.0),
     "carbon 1917-1936": (30.0, 60.0),
+    "carbon 1936-1963": (33.0, 60.0),
     "carbon pre-1905": (26.0, 52.0),
 }
 

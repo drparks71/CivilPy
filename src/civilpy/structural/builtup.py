@@ -12,6 +12,9 @@ every piece::
 
     "2P24x9/16 4L6x4x3/8"              2 web plates 24 x 9/16, 4 corner angles
     "4P24x1/2 2P16x7/16 4L4x4x1/2"     2 plates per web, 2 cover PLs, 4 angles
+    "2P14x3/8 1P16x3/8 4L3.5x3.5x3/8 W16"   one cover on top only, webs 16 out-to-out
+    "2C15x0.52x3.52x0.65 W16.5"        two channels, toes in, laced both faces
+    "I15.86x0.407x8.464x0.645"         one rolled I (a truss vertical of the 1930s)
 
 This module turns that shorthand back into geometry: :func:`rects` gives
 the rectangles the section is actually made of, which is what a LOD 400
@@ -42,8 +45,9 @@ web area, ``ASy`` the angle horizontal legs plus covers.
 
 Two dimensions are assumptions, not sheet values, and they move only the
 weak-axis numbers: the web out-to-out width (:func:`WIDTH`, 18 in, or 20 in
-when the angles have 6 in or larger legs both ways) and which angle leg is
-outstanding.  The numbered shop sheets settle both.
+when the angles have 6 in or larger legs both ways -- unless the spec
+carries it as ``W16``) and which angle leg is outstanding.  The numbered
+shop sheets settle both.
 
 Originally written for a 1932 riveted through-truss
 against its D-series member sheets.
@@ -53,7 +57,8 @@ from __future__ import annotations
 import re
 from fractions import Fraction
 
-_TOK = re.compile(r"(\d)([PL])([\d/x]+)")
+_TOK = re.compile(r"(\d?)([PLCI])([\d/x.]+)")
+_WIDTH = re.compile(r"(?<![\w.])W(\d+(?:\.\d+)?)(?![\w.])")
 
 
 def parse(spec: str):
@@ -61,27 +66,91 @@ def parse(spec: str):
 
     ``webs`` and ``covers`` are ``(count, width_or_depth, thickness)``;
     ``angles`` is ``(count, leg_a, leg_b, thickness)``.  The first plate
-    group is the webs, a second plate group is the cover plates."""
-    webs = covers = angles = None
+    group is the webs, a second plate group is the cover plates.
+
+    For a channel or rolled-I member (see :func:`parse_ex`) ``webs`` reports
+    the channel / I web as ``(count, depth, thickness)`` so callers that
+    only want the web keep working; ``angles`` is then ``None``."""
+    x = parse_ex(spec)
+    if x["channels"]:
+        n, d, tw, _bf, _tf = x["channels"]
+        return (n, d, tw), x["covers"], None
+    if x["rolled_i"]:
+        d, tw, _bf, _tf = x["rolled_i"]
+        return (1, d, tw), x["covers"], None
+    return x["webs"], x["covers"], x["angles"]
+
+
+def parse_ex(spec: str) -> dict:
+    """Everything the shorthand says, as a dict.
+
+    Beyond the plate-and-angle grammar of :func:`parse` the sheets of the
+    1930s describe three more things, and the spec can carry them:
+
+    * ``W16`` -- the out-to-out width of the webs (in), when the shop sheet
+      gives it; without it :func:`WIDTH` assumes one from the angle size.
+    * ``2C15x0.52x3.52x0.65`` -- two channels (depth, web, flange width,
+      flange thickness), webs vertical and toes turned in, the laced
+      bottom-chord member of the era.  A following plate group
+      (``2P12x7/16``) is web reinforcing plates on the channel webs, not
+      covers.
+    * ``I15.86x0.407x8.464x0.645`` -- one rolled I (depth, web, flange
+      width, flange thickness), the verticals and diagonals of a 1930s
+      truss; a plate group on it is likewise web reinforcement.
+
+    A cover-plate group with an **odd** count sits on the top face only
+    (``1P16x3/8``: one plate on top, the bottom laced); an even count is
+    split top and bottom as before.
+
+    Keys: ``webs``, ``covers``, ``angles``, ``channels``, ``rolled_i``,
+    ``reinf``, ``width``."""
+    out = dict(webs=None, covers=None, angles=None, channels=None,
+               rolled_i=None, reinf=None, width=None)
+    plates = []
     for n, kind, dims in _TOK.findall(spec):
         vals = [float(Fraction(v)) for v in dims.split("x")]
-        n = int(n)
+        n = int(n) if n else 1
         if kind == "P":
-            if webs is None:
-                webs = (n, vals[0], vals[1])
-            else:
-                covers = (n, vals[0], vals[1])
+            plates.append((n, vals[0], vals[1]))
+        elif kind == "L":
+            out["angles"] = (n, vals[0], vals[1], vals[2])
+        elif kind == "C":
+            out["channels"] = (n, vals[0], vals[1], vals[2], vals[3])
         else:
-            angles = (n, vals[0], vals[1], vals[2])
-    if webs is None or angles is None:
-        raise ValueError("spec %r has no web plates and/or no angles" % spec)
-    return webs, covers, angles
+            out["rolled_i"] = (vals[0], vals[1], vals[2], vals[3])
+    m = _WIDTH.search(spec)
+    if m:
+        out["width"] = float(m.group(1))
+    if out["channels"] or out["rolled_i"]:
+        if plates:
+            out["reinf"] = plates[0]
+        if len(plates) > 1:
+            out["covers"] = plates[1]
+    else:
+        if plates:
+            out["webs"] = plates[0]
+        if len(plates) > 1:
+            out["covers"] = plates[1]
+        if out["webs"] is None or out["angles"] is None:
+            raise ValueError("spec %r has no web plates and/or no angles" % spec)
+    return out
 
 
 def WIDTH(angles) -> float:
     """Assumed web out-to-out width (in): 20 for 6 in and larger angles, else 18."""
     _, a, b, _ = angles
     return 20.0 if min(a, b) >= 6 else 18.0
+
+
+def _cover_stacks(covers):
+    """``[(z_sign, thickness)]`` per cover stack: an even count splits top
+    and bottom, an odd count is all on top."""
+    if not covers:
+        return []
+    n_c, _w, tc = covers
+    if n_c % 2 == 0:
+        return [(-1, tc * n_c / 2), (1, tc * n_c / 2)]
+    return [(1, tc * n_c)]
 
 
 def rects(spec: str):
@@ -94,27 +163,55 @@ def rects(spec: str):
     This is the LOD 400 decomposition: draw one solid per rectangle,
     extruded along the member, and the model shows the actual plates and
     angles a rivet gang put together."""
-    webs, covers, angles = parse(spec)
-    n_w, d, t_w = webs
-    tw = t_w * n_w / 2                  # total web thickness per side
-    B = WIDTH(angles)
+    x = parse_ex(spec)
+    covers = x["covers"]
     R = []
-    for s in (-1, 1):
-        R.append((tw, d, s * (B / 2 - tw / 2), 0.0))
-    n_a, a, b, ta = angles
-    horiz, vert = max(a, b), min(a, b)
-    yin = B / 2 - tw                    # inside face of web
-    for sy in (-1, 1):
+    if x["channels"]:
+        n_c, d, tw, bf, tf = x["channels"]
+        B = x["width"] if x["width"] else 2 * bf + 10.0
+        for s in (-1, 1):
+            R.append((tw, d, s * (B / 2 - tw / 2), 0.0))
+            for sz in (-1, 1):
+                R.append((bf - tw, tf, s * (B / 2 - tw - (bf - tw) / 2),
+                          sz * (d / 2 - tf / 2)))
+        if x["reinf"]:
+            n_r, dr, tr = x["reinf"]
+            t = tr * n_r / 2
+            for s in (-1, 1):
+                R.append((t, dr, s * (B / 2 - tw - t / 2), 0.0))
+        angles = None
+    elif x["rolled_i"]:
+        d, tw, bf, tf = x["rolled_i"]
+        B = bf
+        R.append((tw, d - 2 * tf, 0.0, 0.0))
         for sz in (-1, 1):
-            # horizontal (outstanding) leg, full length, along the top/bottom edge
-            R.append((horiz, ta, sy * (yin - horiz / 2), sz * (d / 2 - ta / 2)))
-            # vertical leg along the web, below/above the horizontal leg
-            R.append((ta, vert - ta, sy * (yin - ta / 2),
-                      sz * (d / 2 - ta - (vert - ta) / 2)))
+            R.append((bf, tf, 0.0, sz * (d / 2 - tf / 2)))
+        if x["reinf"]:
+            n_r, dr, tr = x["reinf"]
+            t = tr * n_r / 2
+            for s in (-1, 1):
+                R.append((t, dr, s * (tw / 2 + t / 2), 0.0))
+        angles = None
+    else:
+        n_w, d, t_w = x["webs"]
+        tw = t_w * n_w / 2                  # total web thickness per side
+        angles = x["angles"]
+        B = x["width"] if x["width"] else WIDTH(angles)
+        for s in (-1, 1):
+            R.append((tw, d, s * (B / 2 - tw / 2), 0.0))
+        n_a, a, b, ta = angles
+        horiz, vert = max(a, b), min(a, b)
+        yin = B / 2 - tw                    # inside face of web
+        for sy in (-1, 1):
+            for sz in (-1, 1):
+                # horizontal (outstanding) leg, full length, along the top/bottom edge
+                R.append((horiz, ta, sy * (yin - horiz / 2), sz * (d / 2 - ta / 2)))
+                # vertical leg along the web, below/above the horizontal leg
+                R.append((ta, vert - ta, sy * (yin - ta / 2),
+                          sz * (d / 2 - ta - (vert - ta) / 2)))
     if covers:
-        n_c, w, tc = covers
-        tcov = tc * n_c / 2
-        for sz in (-1, 1):
+        w = covers[1]
+        for sz, tcov in _cover_stacks(covers):
             R.append((w, tcov, 0.0, sz * (d / 2 + tcov / 2)))
     return R, (d, B, tw, angles, covers)
 
@@ -122,19 +219,40 @@ def rects(spec: str):
 def piece_labels(spec: str) -> list[str]:
     """A name per rectangle from :func:`rects`, in the same order -- so a
     BrIM emit can tag each solid with the piece it represents."""
-    webs, covers, angles = parse(spec)
-    n_w, d, t_w = webs
-    n_a, a, b, ta = angles
-    horiz, vert = max(a, b), min(a, b)
-    out = ["web plate %gx%g (x%d)" % (d, t_w, max(1, n_w // 2)) for _ in range(2)]
-    for sy in ("S", "N"):
-        for sz in ("bottom", "top"):
-            out.append("angle L%gx%gx%g %s %s outstanding leg" % (a, b, ta, sy, sz))
-            out.append("angle L%gx%gx%g %s %s web leg" % (a, b, ta, sy, sz))
+    x = parse_ex(spec)
+    covers = x["covers"]
+    out = []
+    if x["channels"]:
+        n_c, d, tw, bf, tf = x["channels"]
+        for s in ("S", "N"):
+            out.append("channel C%gx%g web %s" % (d, tw, s))
+            for sz in ("bottom", "top"):
+                out.append("channel C%gx%g %s %s flange" % (d, tw, s, sz))
+        if x["reinf"]:
+            n_r, dr, tr = x["reinf"]
+            out += ["web reinforcing plate %gx%g %s (x%d)" % (dr, tr, s, max(1, n_r // 2))
+                    for s in ("S", "N")]
+    elif x["rolled_i"]:
+        d, tw, bf, tf = x["rolled_i"]
+        out.append("rolled I %gx%g web" % (d, bf))
+        out += ["rolled I %gx%g %s flange" % (d, bf, sz) for sz in ("bottom", "top")]
+        if x["reinf"]:
+            n_r, dr, tr = x["reinf"]
+            out += ["web reinforcing plate %gx%g %s (x%d)" % (dr, tr, s, max(1, n_r // 2))
+                    for s in ("S", "N")]
+    else:
+        n_w, d, t_w = x["webs"]
+        n_a, a, b, ta = x["angles"]
+        out += ["web plate %gx%g (x%d)" % (d, t_w, max(1, n_w // 2)) for _ in range(2)]
+        for sy in ("S", "N"):
+            for sz in ("bottom", "top"):
+                out.append("angle L%gx%gx%g %s %s outstanding leg" % (a, b, ta, sy, sz))
+                out.append("angle L%gx%gx%g %s %s web leg" % (a, b, ta, sy, sz))
     if covers:
         n_c, w, tc = covers
-        for sz in ("bottom", "top"):
-            out.append("cover plate %gx%g %s (x%d)" % (w, tc, sz, max(1, n_c // 2)))
+        for sz, tcov in _cover_stacks(covers):
+            out.append("cover plate %gx%g %s (x%d)"
+                       % (w, tc, "top" if sz > 0 else "bottom", max(1, round(tcov / tc))))
     return out
 
 
@@ -142,7 +260,7 @@ def envelope(spec: str) -> tuple[float, float]:
     """``(B, H)`` overall width and depth of the member (in) -- the LOD 300
     box that stands in for the built-up section."""
     _R, (d, B, _tw, _angles, covers) = rects(spec)
-    h = d + (2 * covers[2] * covers[0] / 2 if covers else 0.0)
+    h = d + sum(t for _s, t in _cover_stacks(covers))
     return B, h
 
 
@@ -151,6 +269,7 @@ def properties(spec: str) -> dict:
     ``Iz``, ``J``, ``ASy``, ``ASz``, extreme fibres ``cy_*``/``cz_*``,
     first moments ``Qy``/``Qz`` at the neutral axis, and ``H``/``B``."""
     R, (d, B, tw, angles, covers) = rects(spec)
+    x = parse_ex(spec)
     A = sum(b * h for b, h, _, _ in R)
     yc = sum(b * h * y for b, h, y, _ in R) / A
     zc = sum(b * h * z for b, h, _, z in R) / A
@@ -181,19 +300,25 @@ def properties(spec: str) -> dict:
             q += h * (rt - lo) * ((rt + lo) / 2 - yc)
         return q
 
-    if covers:
-        n_c, w, tc = covers
-        tcov = tc * n_c / 2
+    stacks = _cover_stacks(covers)
+    if len(stacks) == 2 and not x["rolled_i"]:
+        # covers top and bottom close the box: thin-walled closed section
+        tcov = stacks[0][1]
         am = (B - tw) * (d + tcov)
         J = 4 * am ** 2 / (2 * (d + tcov) / tw + 2 * (B - tw) / tcov)
     else:
         J = sum(max(b, h) * min(b, h) ** 3 / 3 for b, h, _, _ in R)
-    asz = 2 * tw * d
+    if x["rolled_i"]:
+        asz = tw * (d - 2 * x["rolled_i"][3])
+    else:
+        asz = 2 * tw * d
+    if x["reinf"]:
+        asz += x["reinf"][0] * x["reinf"][1] * x["reinf"][2]
     asy = sum(b * h for b, h, _, _ in R) - asz
     return {"A": A, "Iy": Iy, "Iz": Iz, "J": J, "ASy": asy, "ASz": asz,
             "cz_p": zmax, "cz_m": zmin, "cy_p": ymax, "cy_m": ymin,
             "Qy": q_above(), "Qz": q_right(),
-            "H": d + (2 * covers[2] * covers[0] / 2 if covers else 0),
+            "H": d + sum(t for _s, t in stacks),
             "B": B, "tw": tw, "d": d}
 
 

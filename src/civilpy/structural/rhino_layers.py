@@ -243,14 +243,18 @@ def ensure_layer(f, full_path: str, color: tuple = None) -> int:
     given and the path is one of the constants above."""
     import rhino3dm as r3
 
+    import uuid
+
     parts = full_path.split("::")
     parent_id = None
     idx = -1
     accum = ""
     for part in parts:
         accum = part if not accum else f"{accum}::{part}"
-        existing = f.Layers.FindName(part, parent_id)
-        if existing.Index >= 0:
+        # rhino3dm <= 8.9 returned a Layer with Index -1 for a miss; 8.17+
+        # returns None, and wants Guid.Empty rather than None for "root"
+        existing = f.Layers.FindName(part, parent_id if parent_id is not None else uuid.UUID(int=0))
+        if existing is not None and existing.Index >= 0:
             idx = existing.Index
         else:
             lyr = r3.Layer()

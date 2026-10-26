@@ -219,9 +219,11 @@ class LacedMember:
         on the angles."""
         rects, (d, B, tw, angles, covers) = builtup.rects(self.spec)
         labels = builtup.piece_labels(self.spec)
+        x = builtup.parse_ex(self.spec)
         webs, _covers, ang = builtup.parse(self.spec)
-        n_a, la, lb, ta = ang
-        desig, _area, _ed = angle_designation(la, lb, ta)
+        if ang:
+            n_a, la, lb, ta = ang
+            desig, _area, _ed = angle_designation(la, lb, ta)
         out = []
         for k, (b, h, y, z) in enumerate(rects):
             name = labels[k] if k < len(labels) else "piece %d" % k
@@ -230,6 +232,20 @@ class LacedMember:
             elif "cover" in name:
                 kind = "cover plate"
                 label = "PL %s x %s" % (_frac(_covers[1]), _frac(_covers[2]))
+                dn = ""
+            elif "channel" in name:
+                _n, cd, ctw, cbf, ctf = x["channels"]
+                kind = "channel web" if "web" in name else "channel flange"
+                label = "C%s x %s / %s x %s" % (_frac(cd), _frac(ctw), _frac(cbf), _frac(ctf))
+                dn = ""
+            elif "rolled I" in name:
+                rd, rtw, rbf, rtf = x["rolled_i"]
+                kind = "rolled I web" if "web" in name else "rolled I flange"
+                label = "I %s x %s" % (_frac(rd), _frac(rbf))
+                dn = ""
+            elif "reinforcing" in name:
+                kind = "web reinforcing plate"
+                label = "PL %s x %s" % (_frac(x["reinf"][1]), _frac(x["reinf"][2]))
                 dn = ""
             else:
                 kind = "web plate"
@@ -244,10 +260,17 @@ class LacedMember:
         """Distance across an open face between the two lacing rivet lines.
 
         The bars connect the outstanding legs of the corner angles, so the
-        gauge is the web spacing less one angle leg either side."""
+        gauge is the web spacing less one angle leg either side (less one
+        flange width either side on a two-channel member)."""
         _rects, (_d, B, tw, angles, _covers) = builtup.rects(self.spec)
-        _n, la, lb, _ta = angles
-        leg = min(la, lb)
+        x = builtup.parse_ex(self.spec)
+        if x["channels"]:                     # bars run toe to toe of the channel flanges
+            leg = x["channels"][3]
+        elif x["rolled_i"]:
+            raise ValueError("a rolled I has no open face to lace")
+        else:
+            _n, la, lb, _ta = angles
+            leg = min(la, lb)
         return max(B - 2.0 * leg, 2.0)
 
     def lacing_pieces(self) -> list:
