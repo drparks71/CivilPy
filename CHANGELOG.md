@@ -5,7 +5,7 @@ Versions follow [Semantic Versioning](https://semver.org/) (major.minor.patch).
 
 ---
 
-## [Unreleased]
+## [0.6.0] - 2026-10-25
 
 ### Changed (defaults - results move)
 
@@ -16,6 +16,30 @@ Versions follow [Semantic Versioning](https://semver.org/) (major.minor.patch).
   Hydraulic Engineering's October 2026 answer.  Travel velocity and the
   intensity re-take are as `"cdss"`, which stays available for re-checking
   CDSS 1.0.0.3 designs.  The junction HGL can only rise.
+
+- **Steel I-girders check to the AASHTO LRFD 10th Edition by default.**
+  Lateral-torsional buckling Lp = 1.1 rt sqrt(E / Fyc) and Fyr = 0.5 Fyc
+  welded / 0.7 Fyc rolled; web slenderness lambda_rw = c_rw sqrt(E / Fyc),
+  c_rw = 3.1 + 5 / a_wc in 4.6..5.7 (`web_slenderness_limit`), also in
+  Appendix A6; studs Qn = 0.70 Asc Fu with phi_sc 1.0 and fatigue
+  Zr = (dF)n Asc (Condition 9.2).  `design_year < 2024` keeps the 9th
+  Edition forms.  Checked end to end against NSBA Steel Bridge Design
+  Handbook Design Examples 1, 2 and 4.
+- `bolt_shear_resistance` defaults to C = 0.56 / 0.45 (8th Edition on);
+  `design_year < 2017` gives 0.48 / 0.38.
+- **`bolted_field_splice` follows the NSBA Steel Bridge Design Handbook
+  Ch. 14 (Dec 2025) and the AISC-NSBA Standard Plans.**  Girder-flange
+  block shear uses each flange's own thickness and Fy / Fu (results no
+  longer change when the sides are swapped); flange bearing sums end and
+  interior holes against the weaker of the flanges and splice plates; the
+  flange-only Service II slip check is advisory (`CheckResult.advisory`)
+  since the web slip check governs; Kc = 0.80 for Class C and
+  duplex-over-galvanized (`BoltSpec.duplex_galvanized`).  The C6.13.6.1.3b
+  10 % rule applies automatically (`splices.plate_area_difference`), and
+  block-shear tension planes span every gage line.  `method="stress_based"`
+  takes concurrent top / bottom flange stresses (`SpliceInput.stress_cases`)
+  for the full 6.13.6.1.4c design forces - was 22 % low on compression
+  cases.
 
 ### Added
 
@@ -46,6 +70,56 @@ Versions follow [Semantic Versioning](https://semver.org/) (major.minor.patch).
 - `culvert_design.first_passing`, `design_table` (D / D-1 / D-2 / D+1 and
   F rows) and `overflow_discharge` (the flow the culvert cannot pass at the
   overflow elevation).
+- `structural.staad`: read a STAAD.Pro .std deck (geometry, sections,
+  releases, master / slave, static loads, combinations, moving loads and
+  LOAD GENERATION) and translate it to MIDAS Civil NX tables.
+- `frame_analysis`: direct-stiffness 3-D frame / truss solver on the
+  StructuralModel hub, for truss analysis per AASHTO/NSBA G13.2-2024.
+- `aashto/lrfd/pins`: pins, eyebars and pin-connected plates (6.7.6, 6.8.6,
+  6.8.7) with `pin_actions` / `pin_checks`.
+- `member_strengthening`: FHWA HIF-18-042 locked-in / shared stress method
+  for plates bolted onto in-service members, with interaction and
+  magnified rating factors.
+- `aashto/irm`: internal redundancy of built-up members (NSBA IRM Evaluator
+  v3.2 port).
+- `lrfr.steel_member_rating`: the MBE 6A steel rating flow for inventory,
+  operating, legal, permit and emergency vehicles.
+- `aashto/fatigue_retrofit`: retrofit categories and retrofitted remaining
+  life (AASHTO/NSBA G14.1-2021).
+- `structural/heat_straightening` (Avent's method) and
+  `structural/heat_curving` (Fabrication Spec 14.3.2.2, NSBA Heat Curve
+  Evaluator v2.01 port).
+- `aashto/cif`: constraint-induced fracture scorecard (NSBA B304).
+- `aashto/lrfd/stability_bracing`: torsional and lean-on bracing
+  (6.7.4.2.2, NSBA B303).
+- `structural/span_curves`: span weight / depth curves for preliminary
+  design (curve data supplied by the caller).
+- `ContinuousBeam` shear, reaction and continuous-moment influence lines;
+  `InfluenceLine.hs20_44_effect` (Standard Specifications HS20-44,
+  validated against the AISC continuous highway bridge tables) and
+  `hl93_effect(dual_truck=...)` for the 3.6.1.3.1 two-truck negative-moment
+  loading (`"contraflexure"` applies it only in the negative-moment region)
+  with the C3.6.1.3.1 dual tandem.
+- `lrfd.rigid_rotation_exterior`, `moment_gradient_factor`,
+  `lateral_bending_amplification`, `b6_rotation_limit`,
+  `b6_refined_effective_moment`.
+
+### Fixed
+
+- Constructibility, discretely braced and tension-flange checks take fbu
+  and fl as magnitudes - a negative compressive fbu passed every case.
+- `transverse_stiffener_inertia` interpolates Eq. 6.10.11.1.3-7 on rho_w
+  when the panel shears are given (was I_t2 always).
+- The historic steel shapes table reads a lone space as missing, so its
+  property columns stay numeric under pint 0.26.
+
+### Dependencies
+
+- Lock file refreshed for published advisories: Pillow 13.0.0,
+  certifi 2026.10.23, tornado 6.6, filelock 4.2.4, werkzeug 3.1.9,
+  setuptools 84.2.1, paramiko 5.1.0.  Pillow 13 and filelock 4.2 need
+  Python 3.11+, so Python 3.10 stays on Pillow 12.3.0, filelock 4.1.0 and
+  tornado 6.5.10.
 
 ## [0.5.0] - 2026-10-14
 
