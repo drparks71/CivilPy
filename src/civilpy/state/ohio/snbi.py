@@ -465,8 +465,15 @@ class Feature(BaseModel):
     @model_validator(mode="after")
     def _feature_type_conditionals(self):
         ftype = (self.BF01 or "").upper()
-        # Highway sub-items reported for every highway feature (FHWA flags null)
-        highway_required = ("BH02", "BH06", "BH09", "BH11", "BH13", "BH16", "BH17")
+        # Highway sub-items FHWA flags when null. FHWA's processing report (OH,
+        # 5/6/2026, ODOT-owned rows) checks six of them only on the feature the
+        # bridge CARRIES (B.F.02 C / T / L): BH02 544 carried vs 8 under, BH06
+        # 90/0, BH09 48/0, BH11 42/0, BH13 44/0, BH17 70/0. BH16 is the one item
+        # it also checks on highway features UNDER the bridge (54 carried, 222
+        # under). Checking the carried-only items on under-features reported
+        # ~1,200 bridges per item FHWA never flags (2026-10-26).
+        carried = (self.BF02 or "").strip().upper() in ("C", "T", "L")
+        highway_required = ("BH02", "BH06", "BH09", "BH11", "BH13", "BH16", "BH17") if carried else ("BH16",)
         # NOTE: SNBI makes B.RT.01 (a Route dataset) critical for every highway
         # feature, but FHWA's processing report flags it 0 times while our API
         # read omits the Route sub-datasets on ~7,300 bridges (the "export FHWA

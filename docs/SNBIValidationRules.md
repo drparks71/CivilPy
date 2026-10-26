@@ -156,6 +156,12 @@ keep rules FHWA enforces even when our pull over-triggers them on missing data.*
   `BH*` detail block. The `BH*` requiredness is now gated on the feature having a
   Route (i.e. having actually been retrieved), so it no longer re-reports the one
   data-source gap thousands of times across BH02/06/09/11/13/16/17.
+- **2026-10-26 (location gate).** Once the routes under the bridges were fully
+  synced, the highway sub-item rule fired on ~1,200 under-features per item that
+  FHWA never flags. FHWA's OH report (ODOT-owned rows, carried vs under): BH02
+  544/8, BH06 90/0, BH09 48/0, BH11 42/0, BH13 44/0, BH17 70/0, **BH16 54/222**.
+  So BH02/06/09/11/13/17 are now required only on carried features (B.F.02 C, T,
+  L); BH16 stays required on every highway feature.
 - **BAP03 enum accepts "N" (5,999 → 0).** Ohio codes Scour Vulnerability "N"
   (not applicable); FHWA accepts it (BAP05 already allowed "N").
 - **BG05 out-to-out → optional (1,624 → 0).** FHWA flags BG05 only via the

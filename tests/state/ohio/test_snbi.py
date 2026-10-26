@@ -22,7 +22,7 @@ def _route():
 
 def _highway_feature(**overrides):
     data = dict(
-        BF01="H01", BH02="99999", BH06="ROUTE 71", BH09=5000, BH11=2024,
+        BF01="H01", BF02="C", BH02="99999", BH06="ROUTE 71", BH09=5000, BH11=2024,
         BH13=99.9, BH16=40.0, BH17=10, Routes=[_route()],
     )
     data.update(overrides)
@@ -416,6 +416,25 @@ class TestConditionalAndCrossField:
     def test_highway_feature_requires_sub_items(self, field):
         with pytest.raises(ValidationError):
             make_bridge(Features=[_highway_feature(**{field: None})])
+
+    @pytest.mark.parametrize("location", ["C", "T", "L"])
+    @pytest.mark.parametrize("field", ["BH02", "BH06", "BH09", "BH11", "BH13", "BH17"])
+    def test_carried_only_items_required_on_every_carried_location(self, location, field):
+        with pytest.raises(ValidationError):
+            make_bridge(Features=[_highway_feature(BF02=location, **{field: None})])
+
+    @pytest.mark.parametrize("field", ["BH02", "BH06", "BH09", "BH11", "BH13", "BH17"])
+    def test_carried_only_items_tolerated_under_the_bridge(self, field):
+        # FHWA checks these six only on the carried feature (B.F.02 C/T/L);
+        # a road under the bridge (B) or above it (A) may leave them blank.
+        for location in ("B", "A"):
+            b = make_bridge(Features=[_highway_feature(BF02=location, **{field: None})])
+            assert getattr(b.Features[0], field) is None
+
+    def test_bh16_required_on_highway_features_under_the_bridge(self):
+        # BH16 is the one item FHWA flags on under-features too (222 of 276 OH rows)
+        with pytest.raises(ValidationError):
+            make_bridge(Features=[_highway_feature(BF02="B", BH16=None)])
 
     def test_navigable_waterway_requires_clearances(self):
         # BN01 = 'Y' -> navigation clearances (BN02/BN04/BN06) required
