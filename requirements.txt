@@ -30,7 +30,7 @@ branca==0.8.2
     # via folium
 camelot-py==2.0.0
     # via civilpy
-certifi==2025.1.31
+certifi==2026.10.23
     # via
     #   httpcore
     #   httpx
@@ -299,7 +299,7 @@ pandas==3.0.2 ; python_full_version >= '3.11'
     #   civilpy
 pandocfilters==1.5.1
     # via nbconvert
-paramiko==4.0.0
+paramiko==5.1.0
     # via sshtunnel
 parso==0.8.4
     # via jedi
@@ -307,7 +307,16 @@ pexpect==4.9.0 ; sys_platform != 'emscripten' and sys_platform != 'win32'
     # via ipython
 pikepdf==10.12.0
     # via civilpy
-pillow==12.3.0
+pillow==12.3.0 ; python_full_version < '3.11'
+    # via
+    #   camelot-py
+    #   civilpy
+    #   imageio
+    #   matplotlib
+    #   pikepdf
+    #   pytesseract
+    #   scikit-image
+pillow==13.0.0 ; python_full_version >= '3.11'
     # via
     #   camelot-py
     #   civilpy
@@ -501,7 +510,11 @@ tomli==2.4.1 ; python_full_version <= '3.11'
     # via
     #   coverage
     #   pytest
-tornado==6.5.8
+tornado==6.5.10 ; python_full_version < '3.11'
+    # via
+    #   ipykernel
+    #   jupyter-client
+tornado==6.6 ; python_full_version >= '3.11'
     # via
     #   ipykernel
     #   jupyter-client
