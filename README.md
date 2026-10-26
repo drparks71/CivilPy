@@ -6,12 +6,34 @@
 <img alt="PyPI - Python Version" src="https://img.shields.io/pypi/pyversions/civilpy">
 [![PyPI Downloads](https://static.pepy.tech/badge/civilpy/month)](https://pepy.tech/projects/civilpy)
 
-Python tools for civil and structural engineering — every AISC steel shape as a Python object
-with Pint units, NDS wood design, ACI 318 anchor checks, beam shear/moment/deflection diagrams,
-built-up section properties, AASHTO/AREMA design references, Midas Civil API integration, and
-ODOT/SNBI bridge asset management tools.
+Python tools for civil and structural engineering, with a focus on bridges. CivilPy covers
+AASHTO LRFD design checks and MBE load rating, steel bridge evaluation and repair, line-girder
+and 3-D frame analysis, hydraulics and scour, geotechnical design, roadway geometry, LiDAR
+scan-to-CAD, MIDAS Civil NX and Rhino interchange, and Ohio DOT standards and data. Results
+carry the specification article they come from, so a calculation can be checked against the
+code by hand.
 
-**[Source](https://daneparks.com/Dane/civilpy) · [Docs](https://dane.daneparks.com/civilpy) · [PyPI](https://pypi.org/project/civilpy/)**
+**[Source](https://daneparks.com/Dane/civilpy) · [Docs](https://dane.daneparks.com/civilpy) · [PyPI](https://pypi.org/project/civilpy/) · [Changelog](CHANGELOG.md)**
+
+---
+
+## What's in the package
+
+| Area | Modules | Highlights |
+|------|---------|------------|
+| Steel shapes and sections | `structural.steel`, `section_properties`, `builtup` | Every AISC shape and the historic (pre-1970) tables with Pint units; built-up and riveted members |
+| AASHTO LRFD | `structural.aashto.lrfd` | Steel I-girders (Ch. 6, Appendices A6 / B6 / D6, 9th and 10th Editions by `design_year`), bolted field splices, composite sections, distribution factors, concrete and prestressed concrete, decks, columns, strut-and-tie, timber, railings, pins and eyebars, gusset plates, stability bracing |
+| Load rating | `aashto.lrfd.lrfr`, `rating_ratios` | MBE 6A rating factors for inventory, operating, legal, permit and emergency vehicles; steel member rating flow |
+| Analysis | `beam_bending`, `continuous_beam`, `influence_lines`, `frame_analysis`, `moment_distribution`, `truss` | Determinate and continuous beams, influence lines with HL-93 (incl. the dual-truck / dual-tandem negative-moment loading) and HS20-44, a 3-D frame / truss solver, Hardy Cross |
+| Steel bridge evaluation and repair | `member_strengthening`, `aashto.irm`, `aashto.cif`, `aashto.fatigue_retrofit`, `heat_straightening`, `heat_curving` | Plates added to in-service members, internal redundancy, constraint-induced fracture, fatigue retrofits, heat straightening and heat curving |
+| Bearings and substructure | `aashto.bearings`, `abutment`, `pier` | Elastomeric bearings (Method A), retaining walls and abutments, multi-column piers |
+| Wood and concrete | `structural.wood`, `structural.concrete` | NDS sawn lumber and glulam with member checks; ACI 318-19 anchors |
+| Model interchange | `midas`, `midas_models`, `staad`, `structural_model`, `rhino_*`, `ifc_emit` | MIDAS Civil NX API, STAAD.Pro decks to MIDAS, Rhino `.3dm` and IFC model emit |
+| Water resources | `water_resources` | HDS-5 culverts, HEC-18 scour, open-channel and pipe flow, NOAA Atlas 14 / MRMS rainfall, USGS StreamStats, FEMA NFHL, NWS alerts |
+| Geotechnical | `geotech` | Borings and SPT correlations, shallow and deep foundations, lateral earth pressure, p-y and t-z / q-z curves, DIGGS export |
+| Transportation | `transportation` | Horizontal and vertical curves, composed alignments, LandXML, terrain |
+| Scan-to-CAD | `scan` | LiDAR point clouds to decks, piers, spans and clearances |
+| Ohio DOT | `state.ohio`, `state.ohio.DOT` | L&D Vol. 2 drainage (rainfall, inlets, storm sewers, ditches, culvert sizing), SNBI data validation, TIMS data, plan-set and ProjectWise tools |
 
 ---
 
@@ -21,18 +43,25 @@ ODOT/SNBI bridge asset management tools.
 pip install civilpy
 ```
 
-Optional dependency groups for heavier tools:
+Python 3.10 or newer. Optional dependency groups for heavier tools:
 
 | Extra | What it adds |
 |-------|-------------|
 | `civilpy[db]` | PostgreSQL / Oracle connectors, SSH tunnel |
 | `civilpy[pdf]` | PDF extraction (PyMuPDF, Camelot, Tesseract OCR) |
-| `civilpy[geo]` | Folium maps, GeoTIFF tools |
+| `civilpy[geo]` | Folium maps, GeoTIFF tools, pyproj |
 | `civilpy[web]` | Selenium, Plotly |
 | `civilpy[jupyter]` | Notebook utilities, ipywidgets |
 | `civilpy[validation]` | Pydantic models for SNBI data validation |
+| `civilpy[rhino]` | rhino3dm, for the `.3dm` model writers |
+| `civilpy[ifc]` | IfcOpenShell, for IFC model emit |
+| `civilpy[fem]` | Meshing and finite elements (pygmsh, scikit-fem) |
 | `civilpy[lidar]` | LAS/LAZ reading (laspy) and Open3D reconstruction for `civilpy.scan` |
-| `civilpy[full]` | All of the above |
+| `civilpy[mcp]` | The `civilpy-pw-mcp` ProjectWise MCP server |
+| `civilpy[cande]` | CANDE soil-structure interaction for box culverts |
+| `civilpy[gui]`, `civilpy[ai]`, `civilpy[llm]` | Desktop helpers, PyTorch plan-sheet models, Gemini extraction |
+| `civilpy[full]` | db, pdf, geo, web, jupyter, validation, rhino, fem, ifc, gui, mcp |
+| `civilpy[all]` | Everything, including the heavy wheels (torch, open3d) |
 
 ---
 
@@ -44,47 +73,31 @@ carry [Pint](https://pint.readthedocs.io/) units so dimensional arithmetic is au
 ```python
 from civilpy.structural.steel import W, HSS, C, L, Pipe, HP, WT, TwoL
 
-# Wide-flange beam — all standard AISC section properties
+# Wide-flange beam - all standard AISC section properties
 beam = W("W36X150")
-print(beam.depth)               # 35.9 in
-print(beam.flange_width)        # 16.2 in
-print(beam.I_x)                 # 9040.0 in⁴
-print(beam.Z_x)                 # 581.0 in³  (plastic section modulus)
-print(beam.S_x)                 # 504.0 in³  (elastic section modulus)
-print(beam.r_x)                 # radius of gyration
-print(beam.J)                   # torsional constant
-print(beam.Cw)                  # warping constant
-print(beam.slenderness_ratio_web)   # h/tw
-print(beam.slenderness_ratio_flange)  # bf/2tf
+print(beam.depth)               # 35.9 inch
+print(beam.flange_width)        # 12.0 inch
+print(beam.I_x)                 # 9040.0 inch ** 4
+print(beam.Z_x)                 # 581.0 inch ** 3  (plastic section modulus)
+print(beam.S_x)                 # 504.0 inch ** 3  (elastic section modulus)
+print(beam.r_x, beam.J, beam.Cw)
+print(beam.slenderness_ratio_web)   # h/tw = 51.9
 
-# HSS rectangular and round tube sections
-col = HSS("HSS12X8X.500")
+col = HSS("HSS12X8X.500")       # rectangular and round HSS
 print(col.tdes)                 # design wall thickness
 
-# Channel sections
-ch = C("C15X50")
+ch = C("C15X50")                # channels
+ang = L("L4X4X1/2")             # angles
+pile = HP("HP14X117")           # bearing piles
+tee = WT("WT18X151")            # tees cut from W shapes
+dang = TwoL("2L6X4X7/16SLBB")   # double angles
 
-# Angle sections
-ang = L("L4X4X1/2")
-
-# Pipe sections
-pipe = Pipe("Pipe6STD")
-print(pipe.OD, pipe.ID)
-
-# HP bearing piles
-pile = HP("HP14X117")
-
-# Tee sections (split from W shapes)
-tee = WT("WT18X150")
-
-# Double angles
-dang = TwoL("2L6X4X7/16SLBB")
+# Pipes use the EDI nomenclature (Pipe6SCH40 is the manual's Pipe6STD)
+pipe = Pipe("Pipe6SCH40")
+print(pipe.OD, pipe.ID)         # 6.625 inch 6.07 inch
 ```
 
 ### Units and dimensional math
-
-All section properties use [Pint](https://pint.readthedocs.io/) units. Unit conversion and
-arithmetic just work:
 
 ```python
 from civilpy.general import units
@@ -92,31 +105,34 @@ from civilpy.structural.steel import W
 
 beam = W("W24X76")
 
-# Applied moment in kip-ft, convert for stress calculation
+# Bending stress from a moment in kip-ft
 M = 400 * units("kip*ft")
-S_x = beam.S_x.to("in^3")
-fb = (M.to("kip*in") / S_x).to("ksi")
-print(f"Bending stress: {fb:.2f}")   # 14.93 ksi
+fb = (M.to("kip*in") / beam.S_x).to("ksi")
+print(f"Bending stress: {fb:.2f}")   # 27.27 kip_per_square_inch
 
-# Deflection — mix of units resolves automatically
+# Simple-span deflection under 2 klf over 30 ft - the units resolve themselves
 E = 29000 * units("ksi")
-I = beam.I_x.to("in^4")
-L = 30 * units("ft").to("in")
-w = 2 * units("kip/ft").to("kip/in")
-delta = (5 * w * L**4) / (384 * E * I)
-print(delta.to("in"))
+L = (30 * units("ft")).to("in")
+w = (2 * units("kip/ft")).to("kip/in")
+delta = (5 * w * L**4) / (384 * E * beam.I_x)
+print(delta.to("in"))                # 0.599 inch
 ```
 
 ### Historic shapes
 
-Pre-AISC standardization shapes used in older bridges are available via `HistoricSteelSection`:
+Shapes from before AISC standardization, for evaluating older bridges, come from the AISC
+historic shapes tables. `HistoricSteelSection` is the base class; `WF` is the historic
+wide-flange with its full dimensions. A size published in more than one edition needs the
+`designation` column to pick one:
 
 ```python
-from civilpy.structural.steel import HistoricSteelSection, WF
+from civilpy.structural.steel import WF, historic_steel_tables
 
-# Look up a historic WF shape by edition
-section = WF("WF36X150")
-print(section.I_x)
+# Which tables list a 36WF150?
+print(historic_steel_tables.query("Name == '36WF150'")[["Name", "Designation"]])
+
+section = WF("36WF150", designation="36WF_B36")
+print(section.depth, section.flange_width, section.I_x)   # 35.84 inch, 11.972 inch, 9012.1 inch ** 4
 ```
 
 ### Bolt weights
@@ -124,9 +140,9 @@ print(section.I_x)
 ```python
 from civilpy.structural.steel import get_bolt_weights
 
-# A325 bolt, 1.5" long, 0.75" diameter, 2 washers
-weight_per_bolt = get_bolt_weights(length=1.5, diameter=0.75, no_of_washers=2)
-print(f"{weight_per_bolt:.4f} lbs/bolt")
+# A325 bolt, 1.5 in. long, 3/4 in. diameter, 2 washers
+weight = get_bolt_weights(length=1.5, diameter=0.75, no_of_washers=2)
+print(weight)   # 0.618 pound
 ```
 
 ---
@@ -134,7 +150,7 @@ print(f"{weight_per_bolt:.4f} lbs/bolt")
 ## Built-Up Section Properties
 
 `CrossSection` assembles a built-up section by stacking rectangular plates from the bottom up.
-Each call to the instance appends the next component. Can also accept rolled shapes directly.
+Each call to the instance appends the next component. It also accepts rolled shapes.
 
 ```python
 from civilpy.structural.section_properties import CrossSection
@@ -142,86 +158,72 @@ from civilpy.structural.steel import W
 
 # Plate girder: bottom flange + web + top flange
 section = CrossSection(label="bottom flange", dimensions=(16, 1.5))
-section(label="web",           dimensions=(0.5625, 54))
-section(label="top flange",    dimensions=(16, 1.5))
+section(label="web",        dimensions=(0.5625, 54))
+section(label="top flange", dimensions=(16, 1.5))
 
-print(f"Area:         {section.area:.2f} in²")
+print(f"Area:         {section.area:.2f} in²")      # 78.38
 print(f"Neutral axis: {section.n:.2f} in from bottom")
 print(f"I (strong):   {section.I_n:.2f} in⁴")
 
 # Cover-plated rolled beam: start from a W shape, then add plates
-beam = W("W33X201")
-comp = CrossSection(label="W33X201", shape=beam)
+comp = CrossSection(label="W33X201", shape=W("W33X201"))
 comp(label="top cover plate", dimensions=(12, 0.75))
 print(f"Composite I: {comp.I_n:.2f} in⁴")
 ```
 
 ---
 
-## Wood Design (NDS)
+## AASHTO LRFD, Influence Lines and Load Rating
 
-Sawn lumber and glulam sections with NDS reference design values, adjustment factors, and
-ASD/LRFD member checks. Sections are created from a size label, mirroring the steel workflow:
-
-```python
-from civilpy.structural.wood import LumberSection, GlulamSection
-from civilpy.general import units
-
-# Sawn lumber — dressed dimensions, section properties, and NDS Supplement
-# reference design values looked up automatically
-beam = LumberSection("6x12", "Douglas Fir-Larch", "No. 1")
-print(beam.b, beam.d)        # 5.5 inch, 11.25 inch (dressed)
-print(beam.A, beam.Sx)       # 61.875 in², 116.0 in³
-print(beam.Fb, beam.E)       # 1350 psi, 1.6e6 psi
-
-# Glulam — combination symbol lookup (NDS Supplement Table 5A)
-gl = GlulamSection("6.75x30", "24F-V4", "Douglas Fir")
-print(gl.Fb_pos, gl.Fb_neg)  # 2400 psi positive face, 1850 psi negative
-```
-
-### Member design checks
-
-`WoodMemberCheck` applies the full NDS adjustment factor chain
-(C<sub>D</sub>, C<sub>M</sub>, C<sub>t</sub>, C<sub>L</sub>, C<sub>F</sub>, C<sub>i</sub>,
-C<sub>r</sub>, C<sub>P</sub>, C<sub>b</sub>, C<sub>V</sub>) and reports demand/capacity per check:
+The `structural.aashto.lrfd` checks return `CheckResult` objects that carry the article,
+capacity, demand and the intermediate values. Edition changes are handled by `design_year`
+(for example, the 10th Edition steel I-girder provisions apply from 2024 and the 9th Edition
+forms before).
 
 ```python
-from civilpy.structural.wood import LumberSection, WoodMemberCheck
-from civilpy.general import units
+from civilpy.structural.aashto.lrfd.distribution import moment_df_interior
+from civilpy.structural.aashto.lrfd.lrfr import rating_factor
+from civilpy.structural.continuous_beam import ContinuousBeam
 
-# Beam: bending, shear, deflection, bearing
-beam = LumberSection("6x12", "Douglas Fir-Larch", "No. 1")
-check = WoodMemberCheck(beam, method="ASD", wet_service=False, load_duration="normal")
+# Live-load distribution, interior girder (Table 4.6.2.2.2b-1)
+df = moment_df_interior(s_ft=9.0, l_ft=100.0, t_s=8.5, k_g=1.2e6)
+print(f"DF {df.governing:.3f} lanes/girder, within the table's limits: {df.applicable}")
 
-bend = check.check_bending(9600 * units("lbf*ft"))
-print(bend["ratio"], bend["status"])      # 0.736 OK
+# Two 100-ft continuous spans: HL-93 at the pier, including the 3.6.1.3.1
+# two-truck loading where the section is in the negative-moment region
+beam = ContinuousBeam([0.0, 100.0, 200.0])
+il = beam.continuous_moment_influence_line(100.0)
+neg = il.hl93_effect(sign=-1, dual_truck="contraflexure")
+print(f"HL-93 pier moment {neg['total']:.0f} kip-ft per lane, dual truck governs: {neg['dual_truck_governs']}")
 
-shear = check.check_shear(2400 * units("lbf"))
-defl = check.check_deflection(200 * units("lbf/ft"), 16 * units("ft"), limit="L/360")
-check.summary()                            # DataFrame of all checks run
-
-# Column: stability factor Cp computed per NDS 3.7.1
-col = LumberSection("6x6", "Douglas Fir-Larch", "No. 1")
-comp = WoodMemberCheck(col).check_compression(15000 * units("lbf"), le_strong=10 * units("ft"))
-print(comp["Cp"], comp["ratio"])           # 0.692, 0.717
-
-# Combined bending + compression interaction per NDS Eq. 3.9-3
-inter = WoodMemberCheck(LumberSection("6x8", "Douglas Fir-Larch", "No. 1")) \
-    .check_combined_bending_compression(
-        P=5000 * units("lbf"), M=8000 * units("lbf*ft"),
-        le_strong=8 * units("ft"), lu=8 * units("ft"))
+# MBE 6A inventory rating of the pier section
+rf = rating_factor(nominal_capacity=9000.0, dc=2400.0, dw=350.0,
+                   ll_im=abs(neg["total"]) * df.governing, level="inventory")
+print(f"RF {rf.capacity:.2f} ({rf.article})")   # RF 1.92 (6A.4.2.1)
 ```
 
-Also included: `TimberBridgeDeck` and `TimberStringer` for AASHTO LRFD timber bridge checks
-and MBE load rating, and `BoltConnection` for NDS Chapter 12 bolted connections via the
-European Yield Model.
+Also in this area:
+
+- **Steel I-girders** (`lrfd.steel`, `appendix_a6`, `appendix_b6`, `composite`): flexure,
+  shear, constructability, web bend-buckling, fatigue, studs, stiffeners, moment
+  redistribution.
+- **Bolted field splices** (`lrfd.bolted_field_splice`, `lrfd.splices`): a splice designer
+  checked against the NSBA Steel Bridge Design Handbook and the AISC-NSBA Standard Plans.
+- **Concrete** (`lrfd.concrete`, `prestressed`, `deck`, `columns`, `stm`): flexure, shear,
+  prestress losses, deck strip design, columns, strut-and-tie.
+- **Steel evaluation and repair**: `lrfr.steel_member_rating`, `member_strengthening`
+  (FHWA HIF-18-042), `aashto.irm`, `aashto.cif`, `aashto.fatigue_retrofit`,
+  `heat_straightening`, `heat_curving`, `lrfd.pins`, `lrfd.gusset`, `lrfd.stability_bracing`.
+- **Analysis**: `frame_analysis` (3-D frame / truss, direct stiffness),
+  `InfluenceLine.hs20_44_effect` for Standard Specifications ratings, `moment_distribution`,
+  `truss` (method of joints).
 
 ---
 
 ## Beam Analysis
 
-Shear, moment, and deflection diagrams for statically determinate beams, following AISC
-Table 3-23 sign conventions. Supports may be placed anywhere in the span (overhanging beams).
+Shear, moment and deflection diagrams for statically determinate beams, following AISC
+Table 3-23 sign conventions. Supports may be placed anywhere in the span (overhangs).
 
 ```python
 from civilpy.structural.beam_bending import Beam, PointLoadV, DistributedLoadV
@@ -231,27 +233,59 @@ beam = Beam(span=30)
 beam.pinned_support = 0
 beam.rolling_support = 30
 beam.add_loads([
-    PointLoadV(15, 10),          # 15 kips down at x=10 ft
-    DistributedLoadV(2, (0, 30)),  # 2 kips/ft over full span
+    PointLoadV(15, 10),            # 15 kips down at x = 10 ft
+    DistributedLoadV(2, (0, 30)),  # 2 kips/ft over the full span
 ])
 
 axial, R1, R2 = beam.get_reaction_forces()
-print(R1, R2)                    # 40.0, 35.0 kips
+print(R1, R2)                      # 40.0, 35.0 kips
 
-beam.plot_all()                  # beam diagram + V + M (+ deflection) figure
-
-# Other support conditions
-from civilpy.structural.beam_bending import (
-    CantileverBeam, ProppedCantileverBeam, FixedFixedBeam, ContinuousBeam
-)
+beam.plot_all()                    # beam diagram + V + M (+ deflection) figure
 ```
+
+`CantileverBeam`, `ProppedCantileverBeam` and `FixedFixedBeam` cover the other support
+conditions; continuous beams are in `civilpy.structural.continuous_beam`.
+
+---
+
+## Wood Design (NDS)
+
+Sawn lumber and glulam sections with NDS reference design values, adjustment factors, and
+ASD/LRFD member checks:
+
+```python
+from civilpy.structural.wood import LumberSection, GlulamSection, WoodMemberCheck
+from civilpy.general import units
+
+beam = LumberSection("6x12", "Douglas Fir-Larch", "No. 1")
+print(beam.b, beam.d)        # 5.5 inch, 11.25 inch (dressed)
+print(beam.Fb, beam.E)       # 1350 psi, 1.6e6 psi
+
+gl = GlulamSection("6.75x30", "24F-V4", "Douglas Fir")
+print(gl.Fb_pos, gl.Fb_neg)  # 2400 psi positive face, 1850 psi negative
+
+# Full NDS adjustment-factor chain, demand/capacity per check
+check = WoodMemberCheck(beam, method="ASD", wet_service=False, load_duration="normal")
+bend = check.check_bending(9600 * units("lbf*ft"))
+print(bend["ratio"], bend["status"])      # 0.736 OK
+check.check_shear(2400 * units("lbf"))
+check.check_deflection(200 * units("lbf/ft"), 16 * units("ft"), limit="L/360")
+check.summary()                            # DataFrame of all checks run
+
+col = LumberSection("6x6", "Douglas Fir-Larch", "No. 1")
+comp = WoodMemberCheck(col).check_compression(15000 * units("lbf"), le_strong=10 * units("ft"))
+print(round(comp["Cp"], 3), comp["ratio"])  # 0.692 0.717
+```
+
+Also included: `TimberBridgeDeck` and `TimberStringer` for AASHTO LRFD timber bridges and
+MBE rating, and `BoltConnection` for NDS Chapter 12 bolted connections (European Yield Model).
 
 ---
 
 ## Concrete Anchor Design (ACI 318-19)
 
 Chapter 17 anchor checks for cast-in anchors: steel strength, concrete breakout, pullout,
-side-face blowout, shear, and interaction — with a calc-sheet style summary.
+side-face blowout, shear, and interaction, with a calc-sheet style summary.
 
 ```python
 from civilpy.structural.concrete import AnchorBolts
@@ -269,199 +303,167 @@ group = AnchorBolts(
 )
 
 results = group.check_all()    # dict of every limit state
-print(group.summary())         # formatted table: φSn, demand, DCR, OK/NG
+print(group.summary())         # formatted table: phi Sn, demand, DCR, OK/NG
 ```
 
-`ShearLugCheck` covers shear lug design per ACI 318-19 17.11.
+`ShearLugCheck` covers shear lugs per ACI 318-19 17.11.
 
 ---
 
-## Midas Civil API Integration
-
-Connect directly to a running Midas Civil instance via the Open API (Midas Civil 2022+, REST
-API enabled). Store your key in `~/secrets.json` as `{"MIDAS_API_KEY": "your-key-here"}`.
+## Water Resources and Drainage
 
 ```python
-from civilpy.structural.midas import (
-    midas_api, get_api_key,
-    get_elements, get_nodes, get_materials,
-    get_sections, get_static_loads, get_units,
-    get_supports, setup_output_directory,
-)
+from civilpy.water_resources.culvert import Culvert, BarrelShape
+from civilpy.water_resources.scour import pier_scour_csu
+from civilpy.state.ohio.DOT import idf
 
-get_api_key()   # Loads key from ~/secrets.json
+# FHWA HDS-5 culvert: 6 ft concrete pipe, square-edge headwall, 150 cfs
+pipe = Culvert(BarrelShape.circular(6.0), length_ft=80, inlet_invert=101.0,
+               outlet_invert=100.2, n=0.013, inlet="concrete_pipe_square_headwall")
+r = pipe.headwater(150.0, tailwater_elev=102.0)
+print(f"HW {r.headwater_elev:.2f} ft, {r.control} control")    # HW 105.92 ft, inlet control
 
-# Read model geometry
-elements  = get_elements()
-nodes     = get_nodes()
-materials = get_materials()
-sections  = get_sections()
-supports  = get_supports()
-loads     = get_static_loads()
-units_    = get_units()
+# FHWA HEC-18 (CSU equation) local pier scour
+print(f"{pier_scour_csu(approach_velocity_fps=6.0, approach_depth_ft=8.0, pier_width_ft=3.0):.1f} ft")
 
-# Direct API calls for anything not covered by the helpers
-# method: 'GET', 'PUT', 'POST', or 'DELETE'
-# command: Midas API endpoint path
+# ODOT L&D Vol. 2: Figure 1101-1 overland flow time, then the Figure 1101-2 rainfall
+tc = idf.overland_flow_chart_minutes(0.50, 200, 0.2)   # C, length (ft), slope (%)
+i = idf.intensity(tc, 10, "B")                         # duration (min), AEP (%), zone
+print(f"tc {tc:.1f} min, i {i:.2f} in/hr")             # tc 20.0 min, i 3.68 in/hr
+```
+
+Also in `water_resources`: open-channel flow in surveyed or LiDAR cross sections, pipe
+energy and hydraulic grade lines, contraction and abutment scour, NOAA Atlas 14 and MRMS
+rainfall, USGS StreamStats, NHDPlus, FEMA NFHL flood zones, NWS alerts and post-storm scour
+screening. `state.ohio.DOT.roadway_drainage` and `culvert_design` carry the L&D Vol. 2
+ditch, inlet spacing, storm sewer and culvert sizing rules.
+
+---
+
+## Geotechnical and Roadway Geometry
+
+```python
+from civilpy.geotech.shallow_foundation import ultimate_bearing_capacity
+from civilpy.transportation.curves import HorizontalCurve, VerticalCurve
+
+# 8 x 12 ft spread footing, 4 ft deep, on sand (AASHTO LRFD 10.6.3.1.2, Vesic factors)
+q = ultimate_bearing_capacity(b=8, l=12, d=4, gamma=120, phi_deg=32)
+print(f"q_ult {q.q_ult:,.0f} psf")
+
+hc = HorizontalCurve(radius_ft=1200, delta_deg=32, pi_station_ft=12_500)
+print(f"PC {hc.pc_station:.2f}, PT {hc.pt_station:.2f}, L {hc.length_ft:.2f} ft")
+
+vc = VerticalCurve(g1_pct=3.0, g2_pct=-2.0, length_ft=600, pvi_station_ft=15_000, pvi_elevation_ft=820.0)
+print(f"K {vc.k_value:.0f}, high point {vc.high_low_point()}")   # K 120, (15060.0, 816.4)
+```
+
+`geotech` also reads boring logs (including DIGGS and ODOT gINT PDFs) into one boring model,
+derives soil parameters from SPT counts, and covers deep foundations, lateral earth pressure,
+p-y, t-z and q-z curves and LPILE files. `transportation` adds composed alignments, LandXML
+and terrain surfaces.
+
+---
+
+## MIDAS Civil NX, STAAD and Rhino
+
+Connect to a running MIDAS Civil NX through its API (REST API enabled). Store your key in
+`~/secrets.json` as `{"MIDAS_API_KEY": "your-key-here"}`.
+
+```python
+from civilpy.structural.midas import midas_api, get_api_key, get_elements, get_nodes
+
+get_api_key()                      # loads the key from ~/secrets.json
+elements = get_elements()
+nodes = get_nodes()
+
+# Direct calls for anything the helpers do not cover
 response = midas_api("GET", "db/elem")
 midas_api("PUT", "db/stld", body={"Assign": {"1": {"NAME": "Dead Load (DC)"}}})
-
-# Set up a local output directory for exported results
-output_path = setup_output_directory()
 ```
+
+`midas_models` builds model payloads for girder, truss and composite bridges; `staad` reads a
+STAAD.Pro `.std` deck and translates it to MIDAS tables. The `rhino_*` modules write Rhino
+`.3dm` models on one shared layer taxonomy (install `civilpy[rhino]`), and `ifc_emit` writes
+IFC. Box-beam coordination examples are available through
+`civilpy-box-bridges --output ./bridge_examples`; see the
+[generation and Rhino workflow](docs/Box_Bridge_Details.md).
 
 ---
 
-## AASHTO Reference
-
-### Bearing suitability (AASHTO LRFD Table 14.6.2)
+## AASHTO and AREMA References
 
 ```python
-from civilpy.structural.aashto.bearings import BearingSuitability, MethodABearing
-
-# Print the full reference table
-# S = Suitable, U = Unsuitable, R = Requires special consideration
-print(BearingSuitability().table)
-
-# Method A elastomeric bearing design checks
-bearing = MethodABearing(
-    length=12,                    # in
-    width=18,                     # in
-    total_elastomer_thickness=3.0, # in
-    n_layers=3,
-    layer_thickness=1.0,
-)
-bearing.run_checks()              # Prints pass/fail for each AASHTO article
-print(bearing.get_shape_factors())
-print(bearing.get_deflections())
-```
-
-### Load combinations and HL-93
-
-```python
+from civilpy.structural.aashto.bearings import BearingSuitability
 from civilpy.structural.aashto.load_definitions import load_combinations
 from civilpy.structural.aashto.vehicles import HL93Load
 
-# AASHTO LRFD limit state load factors
-print(load_combinations["Strength I"])
-print(load_combinations["Service II"])
-gamma_ll = load_combinations["Strength I"]["LL"]["gamma"]  # 1.75
+# Bearing suitability, LRFD Table 14.6.2-1 (S suitable, U unsuitable, R special consideration)
+print(BearingSuitability().table)
 
-# HL-93 design truck: 8-kip front, two 32-kip rear axles
-# Rear axle spacing governs between 14 ft and 30 ft
+# Limit-state load factors
+gamma_ll = load_combinations["Strength I"]["LL"]["gamma"]   # 1.75
+
 truck = HL93Load()
-print(truck.axels)
+print(truck.axels)   # 8 k front, 32 k drive, 32 k rear at 14-30 ft
 ```
 
----
-
-## AREMA Railroad Bridge Design
-
-```python
-from civilpy.structural.arema.rail_tpg_design import (
-    GlobalDefinitions, LoadDefinitions, ThroughPlateGirderFloorbeam
-)
-
-# Global material constants — defaults per AREMA Chapter 15
-# Override any argument for project-specific conditions
-g = GlobalDefinitions(
-    f_y=50000,          # psi
-    tie_spacing=1.5,    # ft
-    future_ballast=12,  # in
-)
-
-# E80 Cooper loading definitions — override for alternate load rating
-loads = LoadDefinitions(
-    axel_load=100,      # kips
-    wind_load=300,      # lbf/ft
-)
-
-# Floor beam design
-fb = ThroughPlateGirderFloorbeam(globals=g, loads=loads)
-```
+`MethodABearing` runs the LRFD 14.7.6 elastomeric bearing checks. In
+`structural.arema.rail_tpg_design`, `GlobalDefinitions` and `LoadDefinitions` hold the AREMA
+Chapter 15 material constants and Cooper E80 loading for through plate girder floor systems.
 
 ---
 
 ## SNBI Bridge Inspection Data
 
-Pydantic models for the FHWA Special Notice for Bridges and Inspection (SNBI) data standard.
-Useful for validating inspection data before submission to national databases or for building
-tools that read/write SNBI-formatted records.
+Pydantic models for the FHWA Specification for the National Bridge Inventory (SNBI), for
+validating records before submission or building tools that read and write them. Codes are
+checked against the SNBI code tables (install `civilpy[validation]`).
 
 ```python
-from civilpy.state.ohio.snbi import (
-    Element, Route, Feature, Inspection,
-    SpanSet, SubstructureSet, Bridge
-)
+from pydantic import ValidationError
+from civilpy.state.ohio.snbi import Element, SpanSet, Inspection
 
-# Validate an SNBI element record — Pydantic raises ValidationError on bad data
-element = Element(
-    BE01="0100",    # Element number (max 4 chars)
-    BE02="0000",    # Parent element number
-    BE03=1250,      # Total quantity
-    BCS01=1000,     # Quantity in condition state 1
-    BCS02=200,      # Condition state 2
-    BCS03=50,       # Condition state 3
-)
+# Element quantities must reconcile: BE03 = BCS01 + BCS02 + BCS03 + BCS04
+element = Element(BE01="12", BE02="0", BE03=100, BCS01=70, BCS02=20, BCS03=10, BCS04=0)
 
-# Validate a span set configuration
-span = SpanSet(
-    BSP01="M",       # Main span designation
-    BSP02=3,         # Number of spans
-    BSP04="3",       # Span material (Steel)
-    BSP06="02",      # Span type (Stringer/multi-beam)
-    BSP09="1A",      # Deck material and type
-)
+span = SpanSet(BSP01="M01", BSP02=2, BSP04="S01", BSP05="1", BSP06="G01", BSP09="C01", BSP12="R01")
+inspection = Inspection(BIE01="1", BIE02="20240801", BIE03="20240801", BIE05=24)
 
-# Validate inspection metadata
-inspection = Inspection(
-    BIE01="R",              # Routine inspection
-    BIE02="20240801",       # Begin date YYYYMMDD
-    BIE03="20240801",       # Completion date
-    BIE05=24,               # Inspection interval (months)
-)
+try:
+    Element(BE01="12", BE02="0", BE03=100, BCS01=70, BCS02=20, BCS03=5, BCS04=0)
+except ValidationError as e:
+    print(e.errors()[0]["msg"])   # Value error, BE03 Element Total Quantity must equal the sum of BCS01-BCS04
 ```
+
+`civilpy snbi validate records.json` runs the same checks over a JSON file and exits nonzero on any violation, so a submission can be gated in CI.
 
 ---
 
 ## ODOT TIMS Bridge Data
 
-Fetch live bridge records from the ODOT TIMS ArcGIS REST service. No credentials required.
+Live bridge records from the ODOT TIMS ArcGIS REST service. No credentials required.
 
 ```python
 from civilpy.state.ohio.DOT.TIMS import TIMSBridge, get_tims_data
 
-# Single bridge by SFN
 bridge = TIMSBridge("2102374")
-print(bridge)
-# <TIMSBridge SFN: '2102374'>
-#   Route Carried: SR 16
-#   Location:      Coshocton County, District 5
-#   Year Built:    1968
-#   Material/Type: Steel / Stringer/Multi-beam (3/02)
-#   Deck: 6  Superstructure: 6  Substructure: 7
+print(bridge)                       # route, location, year built, type, condition summary
+print(bridge.deck_area, bridge.suff_rating, bridge.lanes_on)
 
-# Any TIMS field is an attribute
-print(bridge.deck_area)
-print(bridge.suff_rating)
-print(bridge.lanes_on)
-
-# Bulk download — full statewide inventory as a DataFrame
+# Bulk download of the bridge layer as a DataFrame (TIMS column names)
 df = get_tims_data("Bridge")
-district_5 = df[df["district"] == 5]
-poor_condition = df[df["deck_summary"] <= 4]
+district_5 = df[df["DISTRICT"].astype(int) == 5]
 ```
 
 ---
 
 ## Scan-to-CAD (LiDAR point clouds)
 
-`civilpy.scan` turns a terrestrial / mobile LiDAR scan of a bridge site into
-engineering features: ground, deck and wall planes, columns, substructure
-units with span lengths, per-span under-clearance, crease edges, and a
-Rhino `.3dm` / DXF on civilpy's shared layer taxonomy. The core is
-`numpy`/`scipy`; `laspy` streams multi-gigabyte `.las` files through a voxel
-grid so they never have to fit in memory.
+`civilpy.scan` turns a terrestrial or mobile LiDAR scan of a bridge site into engineering
+features: ground, deck and wall planes, columns, substructure units with span lengths,
+per-span under-clearance, crease edges, and a Rhino `.3dm` / DXF on civilpy's layer
+taxonomy. The core is `numpy` / `scipy`; `laspy` streams multi-gigabyte `.las` files through
+a voxel grid so they never have to fit in memory (install `civilpy[lidar]`).
 
 ```python
 from civilpy.scan import read_las, extract_features
@@ -472,20 +474,31 @@ print(res.summary()["span_lengths"], res.deck.extent_v)
 res.export_3dm("bridge_as_scanned.3dm")             # deck, piers, edges on Deck::/Substructure:: layers
 ```
 
-Or from the shell: `civilpy scan info site.las`, then
-`civilpy scan extract site.las --voxel 0.25 --dxf features.dxf`.
+---
+
+## Command Line
+
+`civilpy` with no arguments opens an interactive shell (Tab completion, `/help`). Command
+groups:
+
+| Group | Commands |
+|-------|----------|
+| `boring` | `pdf2diggs`, `parse`, `batch` |
+| `hydro` | `channel`, `scour-pier` |
+| `road` | `vcurve`, `hcurve` |
+| `snbi` | `validate` |
+| `odot` | `photos`, `slab`, `bridge`, `tiff-join`, `tiff-split` |
+| `photos` | `exif`, `rename`, `resize`, `stamp` |
+| `pdf` | `tag` |
+| `report` | `notebook` |
+| `spanwire` | `catalog`, `simple`, `wye`, `system` |
+| `scan` | `info`, `extract` |
+
+For example, `civilpy road vcurve --help` or `civilpy scan extract site.las --voxel 0.25 --dxf features.dxf`.
 
 ---
 
 ## Package Structure
-
-Box-beam bridge coordination examples are available through
-`civilpy-box-bridges --output ./bridge_examples` (install `civilpy[rhino]`).
-The gallery covers integral, semi-integral and conventional abutments,
-pile/spread/shaft foundations, retrofit deep-beam railing, approach slabs,
-end treatments and reinforcement clash reports. See the
-[generation and Rhino workflow](docs/Box_Bridge_Details.md), including the
-native solid-slab conversion and the examples' unresolved detailing limits.
 
 ```mermaid
 graph TD
