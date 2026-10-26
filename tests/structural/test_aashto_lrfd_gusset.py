@@ -113,3 +113,9 @@ def test_pin_bearing_and_shear():
     assert b.capacity == pytest.approx(1.5 * 4.0 * 4.5 * 33.0) and b.phi == 1.0
     v = g.pin_shear_resistance(4.5, 33.0)
     assert v.capacity == pytest.approx(2 * 0.58 * 33.0 * math.pi * 4.5 ** 2 / 4.0)
+
+
+def test_pin_flexure_and_interaction():
+    m = g.pin_flexure_resistance(7.0, 33.0)
+    assert m.capacity == pytest.approx(33.0 * 343.0 / 6.0)
+    assert g.pin_interaction(0.6 * m.capacity, m.capacity, 0.8 * 100.0, 100.0) == pytest.approx(0.36 + 0.64)

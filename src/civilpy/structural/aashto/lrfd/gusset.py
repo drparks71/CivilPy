@@ -280,3 +280,14 @@ def pin_shear_resistance(d_pin: float, fy: float, planes: int = 2, phi_v: float 
     ap = math.pi * d_pin ** 2 / 4.0
     return CheckResult(article="6.7.6.2.1", name="Pin shear", capacity=planes * 0.58 * fy * ap, phi=phi_v,
                        details={"Ap": ap, "planes": planes})
+
+
+def pin_flexure_resistance(d_pin: float, fy: float, phi_f: float = 1.0) -> CheckResult:
+    """LRFD 6.7.6.2.1 pin flexure: Mn = Fy D^3 / 6 (the plastic modulus of a round, 6.7.6.2.1-1); phi_f = 1.0."""
+    mn = fy * d_pin ** 3 / 6.0
+    return CheckResult(article="6.7.6.2.1", name="Pin flexure", capacity=mn, phi=phi_f, details={"Z": d_pin ** 3 / 6.0})
+
+
+def pin_interaction(m_u: float, m_r: float, v_u: float, v_r: float) -> float:
+    """LRFD 6.7.6.2.1-3 combined flexure and shear on a pin: (Mu/Mr)^2 + (Vu/Vr)^2 <= 1.0.  Returns the ratio."""
+    return (m_u / m_r) ** 2 + (v_u / v_r) ** 2 if m_r and v_r else float("inf")
