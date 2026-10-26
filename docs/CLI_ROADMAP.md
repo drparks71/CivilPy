@@ -29,7 +29,7 @@ up: Phase 3 calculators (`struct section|beam|line-girder`,
 
 ```
 $ civilpy
-CivilPy 0.6.0 — type /help for commands, Tab to complete, /quit to exit
+CivilPy 0.6.1 — type /help for commands, Tab to complete, /quit to exit
 
 civilpy> load borings/B-001-0-24.xml
   ✓ B-001 (Borehole): 42.5 ft, 14 SPT drives, 3 gradations

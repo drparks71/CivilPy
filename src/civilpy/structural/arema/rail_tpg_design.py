@@ -14,6 +14,7 @@ serviceability, pre-populated with typical AREMA values.
 from civilpy.structural.steel import W, MC
 from civilpy.general import units
 from termcolor import colored
+from dataclasses import dataclass, field
 import math
 
 
@@ -171,13 +172,13 @@ class ThroughPlateGirderFloorbeam:
     ):
         # FB Definitions: use manual dimensions (built-up section) or a W-shape lookup
         if not rolled_shape:
-            self.shape = (shape,)
-            self.depth = (fb_depth,)
-            self.web_thickness = (fb_web_thickness,)
-            self.I_x = (fb_i_x,)
-            self.flange_width = (fb_flange_width,)
-            self.weight = (fb_weight,)
-            self.r_y = (fb_r_y,)
+            self.shape = shape
+            self.depth = fb_depth
+            self.web_thickness = fb_web_thickness
+            self.I_x = fb_i_x
+            self.flange_width = fb_flange_width
+            self.weight = fb_weight
+            self.r_y = fb_r_y
             self.flange_thickness = fb_flange_thickness
         else:
             shape_obj = W(shape)
@@ -195,9 +196,208 @@ class ThroughPlateGirderFloorbeam:
         self.bracket_web_width = fb_bracket_web_width
         self.bracket_web_height = fb_bracket_web_height
         self.bracket_quantity = fb_bracket_quantity
+        self.length = fb_length
+        self.rr_gage = rr_gage
         self.a = fb_length / 2 - rr_gage / 2
         self.A = A
         self.s = s
+
+    def design_checks(
+        self,
+        spacing,
+        span=None,
+        dead_moment=None,
+        dead_shear=None,
+        f_y=50 * units("ksi"),
+        e_steel=29000 * units("ksi"),
+        poisson_ratio=0.30,
+        unbraced_length=None,
+        ballasted=True,
+        rocking_fraction=0.20,
+        wind_on_train=300 * units("lbf/ft"),
+        wind_height=8 * units("ft"),
+        mean_impact_fraction=0.35,
+        fatigue_category="B",
+        flange_holes=(0, 0 * units("in")),
+        web_holes=(0, 0 * units("in")),
+        deflection_limit=640,
+    ):
+        """AREMA Chapter 15 (allowable stress) checks of this floorbeam.
+
+        The floorbeam is a simple span between the girders (``span``, default
+        the floorbeam length) carrying the two rails of one track at
+        ``rr_gage``, in a ballasted deck without stringers.
+
+        Loads:
+
+        - Live load per floorbeam P = 1.15 A D / S (A = axle load, S = axle
+          spacing, D = floorbeam ``spacing`` not more than S), half to each
+          rail (15-1.3.4).
+        - Impact (15-1.3.5): vertical 40 - 3L^2/1600 percent for L < 80 ft,
+          16 + 600/(L - 30) beyond, plus rocking, a couple of
+          ``rocking_fraction`` of the wheel load down on one rail and up on
+          the other; their sum is taken at 90 % on a ballasted deck.
+        - Wind on the train (15-1.3.7): ``wind_on_train`` at ``wind_height``
+          above the rail, carried to the rails as a vertical couple.
+        - Dead load: ``dead_moment`` / ``dead_shear`` when given (the deck,
+          ballast and track the floorbeam carries), else its own weight.
+
+        Checks (allowables from Table 15-1-12, the Group II wind case at
+        1.25 times them):
+
+        - flexure, tension flange on the net section (``flange_holes`` =
+          holes per flange, diameter): 0.55 Fy;
+        - flexure, compression flange on the gross section: the lesser of
+          0.55 Fy and the larger of 0.55 Fy - 0.55 Fy^2 (L/ry)^2 / (6.3 pi^2 E)
+          and 0.131 pi E / (L d sqrt(1 + mu) / Af), L = ``unbraced_length``
+          (default the span);
+        - shear on the web, net of the end-connection ``web_holes``: 0.35 Fy;
+        - fatigue (15-1.3.13, Table 15-1-10, more than 2,000,000 cycles):
+          live load plus ``mean_impact_fraction`` of the impact on the net
+          section against the category's stress range;
+        - deflection under live load plus vertical impact: span / 640
+          (15-1.2.5).
+
+        Returns:
+            FloorbeamChecks: every check with its demand, allowable and
+            ratio; ``.ok`` and ``.governing`` summarise.
+        """
+        L = (self.length if span is None else span).to("ft")
+        g = self.rr_gage.to("ft")
+        a = (L - g) / 2
+        D = min(spacing, self.s)
+        f_y = f_y.to("ksi")
+        e_steel = e_steel.to("ksi")
+        Lb = L if unbraced_length is None else unbraced_length
+        d, tw, tf, bf = self.depth, self.web_thickness, self.flange_thickness, self.flange_width
+        c = d / 2
+
+        # Live load and impact
+        P = 1.15 * self.A * D / self.s
+        wheel = P / 2
+        L_ft = L.to("ft").magnitude
+        vertical = (40 - 3 * L_ft**2 / 1600 if L_ft < 80 else 16 + 600 / (L_ft - 30)) / 100
+        reduction = 0.9 if ballasted else 1.0
+        couple = 1 - 2 * a / L                    # end reaction per unit rail couple
+        R_rock = rocking_fraction * wheel * couple
+
+        M_ll, V_ll = wheel * a, wheel
+        M_imp = reduction * (vertical * M_ll + R_rock * a)
+        V_imp = reduction * (vertical * V_ll + R_rock)
+        R_wind = wind_on_train * wind_height * spacing / g * couple
+        M_wind, V_wind = R_wind * a, R_wind
+
+        if dead_moment is None or dead_shear is None:
+            w = self.weight
+            dead_moment = w * L**2 / 8 if dead_moment is None else dead_moment
+            dead_shear = w * L / 2 if dead_shear is None else dead_shear
+
+        M1 = dead_moment + M_ll + M_imp
+        V1 = dead_shear + V_ll + V_imp
+        M2, V2 = M1 + M_wind, V1 + V_wind
+
+        # Sections
+        n_f, dia_f = flange_holes
+        I_net = self.I_x - n_f * dia_f * tf * (c - tf / 2) ** 2
+        S_net, S_gross = I_net / c, self.I_x / c
+        n_w, dia_w = web_holes
+        A_web = (d - n_w * dia_w) * tw
+
+        # Allowables (Table 15-1-12)
+        F_t = 0.55 * f_y
+        F_c1 = 0.55 * f_y - 0.55 * f_y**2 / (6.3 * math.pi**2 * e_steel) * (Lb / self.r_y) ** 2
+        F_c2 = 0.131 * math.pi * e_steel / (Lb * d * (1 + poisson_ratio) ** 0.5 / (bf * tf))
+        F_c = min(0.55 * f_y, max(F_c1.to("ksi"), F_c2.to("ksi")))
+        F_v = 0.35 * f_y
+
+        checks = []
+
+        def add(name, article, demand, allowable):
+            checks.append(FloorbeamCheck(name, article, demand, allowable))
+
+        for group, M, V, k in (("I", M1, V1, 1.0), ("II (wind)", M2, V2, 1.25)):
+            add(f"Flexure, tension flange, Group {group}", "Table 15-1-12",
+                (M / S_net).to("ksi"), k * F_t)
+            add(f"Flexure, compression flange, Group {group}", "Table 15-1-12",
+                (M / S_gross).to("ksi"), k * F_c)
+            add(f"Shear, web, Group {group}", "Table 15-1-12",
+                (V / A_web).to("ksi"), k * F_v)
+
+        f_sr = ((M_ll + mean_impact_fraction * M_imp) / S_net).to("ksi")
+        add(f"Fatigue, category {fatigue_category}", "15-1.3.13, Table 15-1-10",
+            f_sr, FATIGUE_STRESS_RANGE[fatigue_category])
+
+        F = wheel * (1 + reduction * vertical)
+        delta = (F * a * (3 * L**2 - 4 * a**2) / (24 * e_steel * self.I_x)).to("in")
+        add("Deflection, live load + impact", "15-1.2.5", delta,
+            (L / deflection_limit).to("in"))
+
+        return FloorbeamChecks(
+            checks=checks,
+            loads={
+                "P (per floorbeam)": P.to("kip"),
+                "vertical impact": vertical,
+                "M_DL": dead_moment.to("kip*ft"), "M_LL": M_ll.to("kip*ft"),
+                "M_I": M_imp.to("kip*ft"), "M_W": M_wind.to("kip*ft"),
+                "V_DL": dead_shear.to("kip"), "V_LL": V_ll.to("kip"),
+                "V_I": V_imp.to("kip"), "V_W": V_wind.to("kip"),
+            },
+        )
+
+
+# Allowable fatigue stress range for more than 2,000,000 cycles, ksi
+# (AREMA Table 15-1-10)
+FATIGUE_STRESS_RANGE = {
+    "A": 24 * units("ksi"), "B": 16 * units("ksi"), "B'": 12 * units("ksi"),
+    "C": 10 * units("ksi"), "D": 7 * units("ksi"), "E": 4.5 * units("ksi"),
+    "E'": 2.6 * units("ksi"),
+}
+
+
+@dataclass
+class FloorbeamCheck:
+    """One AREMA check: demand against its allowable."""
+
+    name: str
+    article: str
+    demand: object
+    allowable: object
+
+    @property
+    def ratio(self) -> float:
+        return float((self.demand / self.allowable).to("dimensionless").magnitude)
+
+    @property
+    def ok(self) -> bool:
+        return self.ratio <= 1.0
+
+
+@dataclass
+class FloorbeamChecks:
+    """All floorbeam checks and the loads behind them."""
+
+    checks: list
+    loads: dict = field(default_factory=dict)
+
+    @property
+    def ok(self) -> bool:
+        return all(c.ok for c in self.checks)
+
+    @property
+    def governing(self) -> FloorbeamCheck:
+        return max(self.checks, key=lambda c: c.ratio)
+
+    def __getitem__(self, name) -> FloorbeamCheck:
+        return next(c for c in self.checks if c.name.startswith(name))
+
+    def table(self):
+        """The checks as a DataFrame (name, article, demand, allowable, ratio, ok)."""
+        import pandas as pd
+        return pd.DataFrame([
+            {"check": c.name, "article": c.article, "demand": f"{c.demand:~.3g}",
+             "allowable": f"{c.allowable:~.3g}", "ratio": round(c.ratio, 3), "ok": c.ok}
+            for c in self.checks
+        ])
 
 
 class TPG:
@@ -1679,7 +1879,7 @@ class TPG:
 
         # Required Section Properties  # AREMA Table 15-1-11
         self.fb_M_tot_1 = sum(
-            [self.total_fb_dl_moment, self.fb_M_ll, self.fb_M_imp, self.M_re]
+            [self.total_fb_dl_moment, self.fb_M_ll, self.fb_M_imp, self.fb_M_re]
         )
         self.fb_M_tot_2 = (
             sum(
@@ -1687,7 +1887,7 @@ class TPG:
                     self.total_fb_dl_moment,
                     self.fb_M_ll,
                     self.fb_M_imp,
-                    self.M_re,
+                    self.fb_M_re,
                     self.M_wl,
                 ]
             )
@@ -1846,6 +2046,24 @@ class TPG:
             )
         else:  # pragma: no cover
             print(colored("No Good - Floor Beam Fatigue Check", "red"))
+
+        # Interior floorbeam, every AREMA check in one place (see design_checks)
+        self.fb_checks = self.fb.design_checks(
+            spacing=self.floorbeam_spacing,
+            span=self.girder_spacing,
+            dead_moment=self.total_fb_dl_moment,
+            dead_shear=self.total_fb_dl_shear,
+            f_y=self.global_defs.F_y,
+            e_steel=self.global_defs.E_steel,
+            poisson_ratio=self.global_defs.poisson_ratio,
+            unbraced_length=self.max_diaphragm_spacing,
+            rocking_fraction=self.load_values.rocking_percent,
+            wind_on_train=self.load_values.wind_load,
+            wind_height=self.load_values.wind_load_h,
+            mean_impact_fraction=self.assumed_mean_impact_perc,
+            flange_holes=(self.lateral_num_holes, self.lateral_dia_holes),
+            web_holes=(self.web_conn_girder_holes_num, self.web_conn_girder_holes_dia),
+        )
 
         # Key Dimensions
         self.track_distribution_width = (
@@ -2134,7 +2352,7 @@ class TPG:
             )
             / 1.25
         )
-        self.end_fb_M_tot = max(self.end_fb_M_tot_1, self.fb_M_tot_2)
+        self.end_fb_M_tot = max(self.end_fb_M_tot_1, self.end_fb_M_tot_2)
 
         # Governing shear for end floorbeam (used for end FB checks only, not interior FB)
         self.end_fb_V_tot_1 = sum(

@@ -409,9 +409,29 @@ truck = HL93Load()
 print(truck.axels)   # 8 k front, 32 k drive, 32 k rear at 14-30 ft
 ```
 
-`MethodABearing` runs the LRFD 14.7.6 elastomeric bearing checks. In
-`structural.arema.rail_tpg_design`, `GlobalDefinitions` and `LoadDefinitions` hold the AREMA
-Chapter 15 material constants and Cooper E80 loading for through plate girder floor systems.
+`MethodABearing` runs the LRFD 14.7.6 elastomeric bearing checks.
+
+AREMA Chapter 15 (allowable stress) floorbeam checks for a ballasted-deck through plate
+girder: E80 axle load distributed to the floorbeam (1.15 A D / S), impact with rocking, wind
+on the train, then flexure (tension flange on the net section, compression flange with the
+Table 15-1-12 lateral buckling formulas), web shear, fatigue and L/640 deflection, each in
+Group I and Group II (wind, allowables x 1.25):
+
+```python
+from civilpy.general import units
+from civilpy.structural.arema.rail_tpg_design import ThroughPlateGirderFloorbeam
+
+fb = ThroughPlateGirderFloorbeam(shape="W24X162", fb_length=20 * units("ft"))
+r = fb.design_checks(spacing=2.6 * units("ft"),            # floorbeam spacing
+                     unbraced_length=10 * units("ft"),
+                     flange_holes=(2, 1 * units("in")))    # dead_moment= / dead_shear= for the deck
+print(r.table())                     # check, article, demand, allowable, ratio, ok
+print(r.governing.name, r.ok)        # Fatigue, category B (ratio 0.51) True
+```
+
+`TPG` walks a whole through plate girder span (girders, stiffeners, bearing stiffeners, deck
+plate, end floorbeams) and keeps the interior floorbeam result on `TPG().fb_checks`;
+`GlobalDefinitions` and `LoadDefinitions` hold its material constants and Cooper E80 loading.
 
 ---
 

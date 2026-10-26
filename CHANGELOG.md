@@ -5,10 +5,28 @@ Versions follow [Semantic Versioning](https://semver.org/) (major.minor.patch).
 
 ---
 
-## [Unreleased]
+## [0.6.1] - 2026-10-26
+
+### Added
+
+- **AREMA floorbeam design checks (`structural.arema.rail_tpg_design`).**
+  `ThroughPlateGirderFloorbeam.design_checks(spacing, ...)` runs the Chapter 15 allowable-stress
+  checks of a ballasted-deck floorbeam without stringers: live load 1.15 A D / S to the two
+  rails, impact (vertical plus rocking, 90 % on ballast), wind on the train as a rail couple,
+  dead load given or self-weight; flexure (tension flange net section, compression flange with
+  the Table 15-1-12 buckling formulas), web shear net of connection holes, fatigue (Table
+  15-1-10 categories A to E', live load plus mean impact) and live-load deflection L/640, in
+  Group I and Group II (wind, x 1.25). Returns `FloorbeamChecks` (`.ok`, `.governing`,
+  `.table()`, `.loads`). `TPG` keeps the interior floorbeam result on `fb_checks`.
 
 ### Fixed
 
+- **TPG floorbeam moment used the girder rocking moment.** The interior floorbeam totals
+  added `M_re` (rocking on the main girder, 95.8 kip-ft in the default model) instead of the
+  floorbeam's own `fb_M_re` (10.8 kip-ft), overstating the floorbeam moment by 85 kip-ft
+  (466 to 381). The end floorbeam's Group II moment read the interior floorbeam's value.
+- **Built-up `ThroughPlateGirderFloorbeam(rolled_shape=False)`** stored its dimensions as
+  one-element tuples; they are quantities now.
 - **`get_tims_data` no longer returns a partial table (`state.ohio.DOT.TIMS`).** A dropped
   connection, HTTP error or ArcGIS `{"error": ...}` body used to print a message and return the
   rows fetched so far (14,000 of ~46,000 bridges in one run). Each page is now retried
@@ -23,6 +41,11 @@ Versions follow [Semantic Versioning](https://semver.org/) (major.minor.patch).
   plain `Exception`).
 - **`slenderness_ratio_flange` is a plain number** on W, HP and historic WF (bf/2tf was
   returned in inches).
+
+### Project
+
+- The PyPI page links the GitHub mirror (github.com/drparks71/civilpy) alongside the
+  daneparks.com repository.
 
 ---
 

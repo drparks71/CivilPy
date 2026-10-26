@@ -5,6 +5,7 @@
 #  See the LICENSE file in the project root for full license text.
 
 from unittest import TestCase
+from civilpy.general import units
 from civilpy.structural.arema.rail_tpg_design import TPG, ThroughPlateGirderFloorbeam
 
 
@@ -19,5 +20,5 @@ class TestThroughPlateGirderFloorbeam(TestCase):
     def test_not_rolled_shape(self):
         # Covers lines 144-151: if not rolled_shape: branch
         fb = ThroughPlateGirderFloorbeam(rolled_shape=False)
-        self.assertIsInstance(fb.shape, tuple)
-        self.assertIsInstance(fb.depth, tuple)
+        self.assertEqual(fb.shape, "W24x250")
+        self.assertEqual(fb.depth.units, units("inch").units)
