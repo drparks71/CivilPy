@@ -1,5 +1,7 @@
 """Gusset checks: reproduce the 2012 ODOT OSE LFR gusset rating sheet
 numbers (LFR path) and sanity-check the LRFD 6.14.2.8 path."""
+import math
+
 import pytest
 
 from civilpy.structural.aashto.lrfd import gusset as g
@@ -64,3 +66,50 @@ def test_lrfd_functions_basic():
     assert e.ok and e.details["limit_L_over_t"] == pytest.approx(2.06 * (29000 / 45) ** 0.5)
     b = g.block_shear_resistance(60.225, 44.194, 11.25, 45.0, 70.0)
     assert b.phi == 0.80
+
+
+# --------------------------------------------------------------------------- #
+# Chord splices (MBE 6A.6.12.6.9) and pins (6.7.6.2)
+# --------------------------------------------------------------------------- #
+def test_chord_splice_section_symmetric_has_no_eccentricity():
+    # chord centred on the plate: splice plates add area but no eccentricity
+    sec = g.chord_splice_section(h_plate=40.0, t_plates=1.0, d_chord=20.0, t_splice=1.0, chord_at="bottom", edge=10.0)
+    assert sec["A"] == pytest.approx(60.0)
+    assert sec["e_p"] == pytest.approx(0.0)
+    assert sec["y_c"] == pytest.approx(20.0)
+
+
+def test_chord_splice_section_lower_chord_eccentricity_and_modulus():
+    # plate 40 x 1, no splice plates, chord 20 deep at the bottom: force at 10, centroid at 20
+    sec = g.chord_splice_section(h_plate=40.0, t_plates=1.0, d_chord=20.0)
+    assert sec["e_p"] == pytest.approx(10.0)
+    assert sec["S"] == pytest.approx(1.0 * 40.0 ** 2 / 6.0)     # to the bottom edge, c = 20
+    top = g.chord_splice_section(h_plate=40.0, t_plates=1.0, d_chord=20.0, chord_at="top")
+    assert top["e_p"] == pytest.approx(10.0) and top["S"] == pytest.approx(sec["S"])
+
+
+def test_chord_splice_resistance_amplifier_and_factors():
+    sec = g.chord_splice_section(h_plate=40.0, t_plates=1.0, d_chord=20.0)
+    c = g.chord_splice_resistance(sec["A"], sec["S"], sec["e_p"], 33.0, compression=True)
+    amp = 1.0 + 10.0 * 40.0 / (40.0 ** 2 / 6.0)                   # 1 + e A / S = 2.5
+    assert c.details["amplifier"] == pytest.approx(amp)
+    assert c.capacity == pytest.approx(0.85 * 33.0 * 40.0 / amp)
+    t = g.chord_splice_resistance(sec["A"], sec["S"], sec["e_p"], 33.0, compression=False, fu=60.0, a_n=36.0, s_n=240.0)
+    assert t.details["R_yield"] == pytest.approx(0.95 * 33.0 * 40.0 / amp)
+    assert t.details["R_fracture"] == pytest.approx(0.80 * 60.0 * 36.0 / (1.0 + 10.0 * 36.0 / 240.0))
+    assert t.capacity == pytest.approx(min(t.details["R_yield"], t.details["R_fracture"]))
+
+
+def test_chord_splice_compression_slenderness():
+    sec = g.chord_splice_section(h_plate=40.0, t_plates=1.0, d_chord=20.0)
+    short = g.chord_splice_resistance(sec["A"], sec["S"], sec["e_p"], 33.0, compression=True, l_splice=5.0, t=0.5)
+    assert short.details["Fcr"] == pytest.approx(33.0)              # K L / r = 0.5*5/(0.5/sqrt 12) = 17.3 <= 25
+    long = g.chord_splice_resistance(sec["A"], sec["S"], sec["e_p"], 33.0, compression=True, l_splice=60.0, t=0.5)
+    assert long.details["Fcr"] < 33.0                               # K L / r = 208: column curve
+
+
+def test_pin_bearing_and_shear():
+    b = g.pin_bearing_resistance(4.5, 4.0, 33.0)
+    assert b.capacity == pytest.approx(1.5 * 4.0 * 4.5 * 33.0) and b.phi == 1.0
+    v = g.pin_shear_resistance(4.5, 33.0)
+    assert v.capacity == pytest.approx(2 * 0.58 * 33.0 * math.pi * 4.5 ** 2 / 4.0)

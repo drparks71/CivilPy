@@ -213,3 +213,70 @@ def edge_slenderness_ok(unsupported_edge: float, t: float, fy: float, e: float =
     limit = 2.06 * math.sqrt(e / fy)
     return CheckResult(article="6.14.2.8.7", name="Edge slenderness", capacity=limit * t,
                        demand=unsupported_edge, phi=1.0, details={"limit_L_over_t": limit})
+
+
+def chord_splice_section(h_plate: float, t_plates: float, d_chord: float, t_splice: float = 0.0,
+                         chord_at: str = "bottom", edge: float = 0.0) -> dict:
+    """Gross section of the plates crossing a chord-splice plane, as an equivalent beam: the gusset plates
+    (height ``h_plate`` x total thickness ``t_plates``) plus any splice plates (chord depth ``d_chord`` x total
+    thickness ``t_splice``) centred on the chord.  The chord centroid sits ``edge + d_chord/2`` from the plate
+    edge named by ``chord_at`` ("bottom" for a lower-chord joint, "top" for an upper one).  Returns ``A``,
+    ``S`` (section modulus to the edge on the chord side, where axial and bending stresses add), ``e_p`` (chord
+    force to section centroid) and ``y_c`` (section centroid from the plate bottom), all in inches."""
+    y_chord = edge + d_chord / 2.0 if chord_at == "bottom" else h_plate - edge - d_chord / 2.0
+    parts = [(h_plate * t_plates, h_plate / 2.0, t_plates * h_plate ** 3 / 12.0)]
+    if t_splice > 0 and d_chord > 0:
+        parts.append((d_chord * t_splice, y_chord, t_splice * d_chord ** 3 / 12.0))
+    a = sum(x[0] for x in parts)
+    y_c = sum(x[0] * x[1] for x in parts) / a
+    i = sum(x[2] + x[0] * (x[1] - y_c) ** 2 for x in parts)
+    c = y_c if chord_at == "bottom" else h_plate - y_c          # edge on the chord side
+    return {"A": a, "S": i / c if c else float("inf"), "e_p": abs(y_chord - y_c), "y_c": y_c, "I": i}
+
+
+def chord_splice_resistance(a_g: float, s_g: float, e_p: float, fy: float, *, compression: bool,
+                            fu: float | None = None, a_n: float | None = None, s_n: float | None = None,
+                            e_pn: float | None = None, l_splice: float | None = None, t: float | None = None,
+                            k: float = 0.5, e: float = E_STEEL, phi_cs: float = 0.85, phi_y: float = 0.95,
+                            phi_u: float = 0.80) -> CheckResult:
+    """MBE 6A.6.12.6.9 / LRFD 6.14.2.8.6 chord splice: the plates crossing the splice plane act as a short beam
+    carrying the chord force at eccentricity ``e_p`` from their centroid, so the usable axial resistance is the
+    plain-section resistance divided by (1 + e_p A / S).
+
+    Compression (``compression=True``): Pr = phi_cs Fcr Ag / (1 + e_p Ag / Sg); Fcr = Fy when the splice slenderness
+    K Lsplice / r (r = t / sqrt(12), K = 0.5, Lsplice between the first fastener lines of the two chords) is 25 or
+    less, else the 6.9.4.1 column curve; Fcr = Fy when ``l_splice`` is not given.  Tension: the smaller of
+    phi_y Fy Ag / (1 + e_p Ag / Sg) and phi_u Fu An / (1 + e_pn An / Sn).  ``capacity`` is the *factored* value,
+    ``phi`` = 1.0.  Verify the resistance factors against the MBE edition in force before reporting."""
+    if compression:
+        fcr = fy
+        if l_splice and t:
+            klr = k * l_splice / (t / math.sqrt(12.0))
+            if klr > 25.0:
+                pe = math.pi ** 2 * e / klr ** 2
+                fcr = (0.658 ** (fy / pe)) * fy if pe >= 0.44 * fy else 0.877 * pe
+        pr = phi_cs * fcr * a_g / (1.0 + e_p * a_g / s_g)
+        return CheckResult(article="MBE 6A.6.12.6.9 / LRFD 6.14.2.8.6", name="Chord splice (compression)", capacity=pr,
+                           phi=1.0, details={"Fcr": fcr, "Ag": a_g, "Sg": s_g, "e_p": e_p, "amplifier": 1.0 + e_p * a_g / s_g})
+    r_y = phi_y * fy * a_g / (1.0 + e_p * a_g / s_g)
+    r_u = float("inf")
+    if fu and a_n and s_n:
+        r_u = phi_u * fu * a_n / (1.0 + (e_pn if e_pn is not None else e_p) * a_n / s_n)
+    return CheckResult(article="MBE 6A.6.12.6.9 / LRFD 6.14.2.8.6", name="Chord splice (tension)", capacity=min(r_y, r_u),
+                       phi=1.0, details={"R_yield": r_y, "R_fracture": r_u, "Ag": a_g, "Sg": s_g, "e_p": e_p})
+
+
+def pin_bearing_resistance(d_pin: float, t_bearing: float, fy: float, phi_b: float = 1.0) -> CheckResult:
+    """LRFD 6.7.6.2.2 bearing on a pin: (Pn)b = 1.5 t d Fy over the total plate thickness bearing on the pin;
+    phi_b = 1.0 for pins in bored holes (6.5.4.2)."""
+    pn = 1.5 * t_bearing * d_pin * fy
+    return CheckResult(article="6.7.6.2.2", name="Pin bearing", capacity=pn, phi=phi_b,
+                       details={"d": d_pin, "t_bearing": t_bearing})
+
+
+def pin_shear_resistance(d_pin: float, fy: float, planes: int = 2, phi_v: float = 1.0) -> CheckResult:
+    """LRFD 6.7.6.2.1 pin shear: Vn = 0.58 Fy Ap per shear plane (pin material assumed the structure's steel unless
+    the plans say otherwise); phi_v = 1.0."""
+    ap = math.pi * d_pin ** 2 / 4.0
+    return CheckResult(article="6.7.6.2.1", name="Pin shear", capacity=planes * 0.58 * fy * ap, phi=phi_v,
+                       details={"Ap": ap, "planes": planes})
