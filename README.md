@@ -82,6 +82,7 @@ print(beam.Z_x)                 # 581.0 inch ** 3  (plastic section modulus)
 print(beam.S_x)                 # 504.0 inch ** 3  (elastic section modulus)
 print(beam.r_x, beam.J, beam.Cw)
 print(beam.slenderness_ratio_web)   # h/tw = 51.9
+print(beam.slenderness_ratio_flange)  # bf/2tf = 6.37
 
 col = HSS("HSS12X8X.500")       # rectangular and round HSS
 print(col.tdes)                 # design wall thickness
@@ -92,8 +93,9 @@ pile = HP("HP14X117")           # bearing piles
 tee = WT("WT18X151")            # tees cut from W shapes
 dang = TwoL("2L6X4X7/16SLBB")   # double angles
 
-# Pipes use the EDI nomenclature (Pipe6SCH40 is the manual's Pipe6STD)
-pipe = Pipe("Pipe6SCH40")
+# The manual label or the EDI name both work (Pipe6STD is EDI Pipe6SCH40,
+# HSS12X8X1/2 is HSS12X8X.500); an unknown label raises KeyError with close matches
+pipe = Pipe("Pipe6STD")
 print(pipe.OD, pipe.ID)         # 6.625 inch 6.07 inch
 ```
 
@@ -450,7 +452,9 @@ bridge = TIMSBridge("2102374")
 print(bridge)                       # route, location, year built, type, condition summary
 print(bridge.deck_area, bridge.suff_rating, bridge.lanes_on)
 
-# Bulk download of the bridge layer as a DataFrame (TIMS column names)
+# Bulk download of the bridge layer as a DataFrame (TIMS column names).
+# Each page is retried; a download that still fails raises TIMSDownloadError
+# rather than returning a partial inventory.
 df = get_tims_data("Bridge")
 district_5 = df[df["DISTRICT"].astype(int) == 5]
 ```

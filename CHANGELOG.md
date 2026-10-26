@@ -5,6 +5,27 @@ Versions follow [Semantic Versioning](https://semver.org/) (major.minor.patch).
 
 ---
 
+## [Unreleased]
+
+### Fixed
+
+- **`get_tims_data` no longer returns a partial table (`state.ohio.DOT.TIMS`).** A dropped
+  connection, HTTP error or ArcGIS `{"error": ...}` body used to print a message and return the
+  rows fetched so far (14,000 of ~46,000 bridges in one run). Each page is now retried
+  (`retries=3`, `backoff=2.0` s doubling) and a page that still fails raises
+  `TIMSDownloadError`, with the fetched rows on `.partial`. No matches now return an empty
+  DataFrame instead of raising `UnboundLocalError`.
+- **Shape lookups (`structural.steel`).** Current shapes are found by AISC manual label as well
+  as EDI name, in any case (`Pipe("Pipe6STD")`, `HSS("HSS12X8X1/2")`). A missing label raises
+  `KeyError` listing close names, as documented (was a bare `IndexError` on first use).
+  Historic shapes: an unknown name raises `KeyError`, an unknown designation raises `KeyError`
+  listing the valid ones, and a name under several designations raises `ValueError` (was a
+  plain `Exception`).
+- **`slenderness_ratio_flange` is a plain number** on W, HP and historic WF (bf/2tf was
+  returned in inches).
+
+---
+
 ## [0.6.0] - 2026-10-25
 
 ### Changed (defaults - results move)

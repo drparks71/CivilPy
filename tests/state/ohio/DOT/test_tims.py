@@ -105,7 +105,7 @@ class TestGetTimsData:
         assert df["SFN"].tolist() == ["0100013", "0100021"]
         out = capsys.readouterr().out
         assert "Fetched 2 records. Total so far: 2" in out
-        assert "No more features found. Fetched 1000 total records." in out
+        assert "No more features found. Fetched 2 total records." in out
         assert "shape: (2, 3)" in out
 
     def test_default_source_is_the_roadway_layer(self, monkeypatch):
@@ -119,29 +119,48 @@ class TestGetTimsData:
         assert post.calls[0][1]["data"]["where"] == "1=1"
         assert df.iloc[0]["NLF_ID"] == "SFRAIR00071**C"
 
-    def test_http_error_stops_paging_but_keeps_what_was_fetched(self, monkeypatch, capsys):
-        monkeypatch.setattr(TIMS.requests, "get", Recorder(FakeResponse(layer_metadata(["SFN"]))))
-        monkeypatch.setattr(TIMS.requests, "post", Recorder(
-            FakeResponse(feature_set([{"SFN": "1"}])), FakeResponse(status=503)))
-        df = TIMS.get_tims_data("Bridge")
-        assert df["SFN"].tolist() == ["1"]
-        assert "HTTP Error: 503 error" in capsys.readouterr().out
+    @pytest.fixture
+    def no_sleep(self, monkeypatch):
+        waits = []
+        monkeypatch.setattr(TIMS.time, "sleep", waits.append)
+        return waits
 
-    def test_generic_error_is_reported_and_stops(self, monkeypatch, capsys):
+    @pytest.mark.parametrize("failure", [
+        FakeResponse(status=503),
+        ConnectionError("reset by peer"),
+        FakeResponse(arcgis_error(500, "Error performing query operation")),
+    ], ids=["http", "connection", "arcgis-body"])
+    @pytest.mark.parametrize("retries", [0, 1, 3])
+    def test_a_page_that_keeps_failing_raises_with_the_partial_rows(
+            self, monkeypatch, no_sleep, failure, retries):
         monkeypatch.setattr(TIMS.requests, "get", Recorder(FakeResponse(layer_metadata(["SFN"]))))
-        monkeypatch.setattr(TIMS.requests, "post", Recorder(
-            FakeResponse(feature_set([{"SFN": "1"}])), ConnectionError("reset by peer")))
-        df = TIMS.get_tims_data("Bridge")
-        assert len(df) == 1
-        assert "An error occurred: reset by peer" in capsys.readouterr().out
+        post = Recorder(FakeResponse(feature_set([{"SFN": "1"}])), *[failure] * (retries + 1))
+        monkeypatch.setattr(TIMS.requests, "post", post)
+        with pytest.raises(TIMS.TIMSDownloadError, match="offset 1000") as exc:
+            TIMS.get_tims_data("Bridge", retries=retries, backoff=1.0)
+        assert exc.value.partial["SFN"].tolist() == ["1"]
+        assert len(post.calls) == 1 + retries + 1          # first page, then every attempt
+        assert no_sleep == [2.0 ** k for k in range(retries)]
+
+    @pytest.mark.parametrize("failures", [1, 2, 3])
+    def test_a_page_that_recovers_within_the_retries_completes(
+            self, monkeypatch, no_sleep, failures):
+        monkeypatch.setattr(TIMS.requests, "get", Recorder(FakeResponse(layer_metadata(["SFN"]))))
+        post = Recorder(FakeResponse(feature_set([{"SFN": "1"}])),
+                        *[ConnectionError("reset")] * failures,
+                        FakeResponse(feature_set([{"SFN": "2"}])),
+                        FakeResponse(feature_set([])))
+        monkeypatch.setattr(TIMS.requests, "post", post)
+        df = TIMS.get_tims_data("Bridge", retries=3)
+        assert df["SFN"].tolist() == ["1", "2"]
+        # the retried request asks for the same page again
+        offsets = [c[1]["data"]["resultOffset"] for c in post.calls]
+        assert offsets == [0] + [1000] * (failures + 1) + [2000]
 
     def test_unknown_layer_name_rejected(self):
         with pytest.raises(KeyError):
             TIMS.get_tims_data("Culverts")
 
-    @pytest.mark.xfail(strict=True, reason="BUG: get_tims_data returns the unbound local "
-                       "`df` (UnboundLocalError) when no records match; the docstring "
-                       "promises an empty DataFrame")
     def test_no_records_gives_an_empty_dataframe(self, monkeypatch):
         monkeypatch.setattr(TIMS.requests, "get", Recorder(FakeResponse(layer_metadata(["SFN"]))))
         monkeypatch.setattr(TIMS.requests, "post", Recorder(FakeResponse(feature_set([]))))

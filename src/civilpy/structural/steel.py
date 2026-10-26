@@ -13,6 +13,8 @@ whose attributes are Pint quantities (``SteelSection("W36X150").I_x``,
 ``.S_x``, ``.weight``, …), plus bolt-weight reference data for detailing.
 """
 
+import difflib
+
 import numpy as np
 import pandas as pd
 from sympy.combinatorics.fp_groups import define_schreier_generators
@@ -45,6 +47,13 @@ def conv_frac_str(fraction_string: str) -> float:
         return whole - frac if whole < 0 else whole + frac
 
 
+def _not_found(label, names, kind):
+    """Message for a label missing from a shape table, with the closest names."""
+    close = difflib.get_close_matches(label.upper(), names.dropna().str.upper().unique(), n=5)
+    hint = f"; did you mean {', '.join(close)}?" if close else ""
+    return f"{kind} {label!r} not found{hint}"
+
+
 class SteelSection:
     """
     Main Steel Section Class, the goal is to make the attributes of various
@@ -63,7 +72,8 @@ class SteelSection:
                 ``"2L8X4X5/8LLBB"``. Case and spaces are normalized automatically.
 
         Raises:
-            KeyError: If the label is not found in the AISC shape database.
+            KeyError: If the label is in neither the EDI name nor the AISC
+                manual label column of the shape database.
 
         Example:
             >>> s = SteelSection("W36X150")
@@ -129,15 +139,14 @@ class SteelSection:
         :param self:
         :return: dataframe of raw values from AISC Shape Table
         """
-        try:
-            shape_values = steel_tables[steel_tables["EDI_Std_Nomenclature"] == self.id]
-            return shape_values
-        except KeyError as e:  # pragma: no cover
-            print(
-                "Value not found in shape table,"
-                "check spelling and try again"
-                f"\n\n{e}"
-            )
+        label = self.id.upper()
+        # EDI name first ("Pipe6SCH40", "HSS24X12X.750"), then the manual
+        # label ("Pipe6STD", "HSS24X12X3/4"); the two never collide
+        for column in ("EDI_Std_Nomenclature", "AISC_Manual_Label"):
+            shape_values = steel_tables[steel_tables[column].str.upper() == label]
+            if len(shape_values):
+                return shape_values
+        raise KeyError(_not_found(self.id, steel_tables["AISC_Manual_Label"], "AISC shape"))
 
 
 class W(SteelSection):
@@ -212,7 +221,7 @@ class W(SteelSection):
         # These values are used in most shapes, but not all, hence the ifs
         self.slenderness_ratio_flange = conv_frac_str(
             self.aisc_value["bf/2tf"].values[0]
-        ) * units("in")
+        )
         self.k1 = conv_frac_str(self.aisc_value["k1"].values[0]) * units("in")
 
         self.fastener_workable_gage = conv_frac_str(
@@ -322,7 +331,7 @@ class HP(SteelSection):
         # These values are used in most shapes, but not all, hence the ifs
         self.slenderness_ratio_flange = conv_frac_str(
             self.aisc_value["bf/2tf"].values[0]
-        ) * units("in")
+        )
         self.k1 = conv_frac_str(self.aisc_value["k1"].values[0]) * units("in")
 
         self.fastener_workable_gage = conv_frac_str(
@@ -638,11 +647,18 @@ class HistoricSteelSection:
         Initialize a historic steel section from the AISC historic shapes database.
 
         Args:
-            label (str): Shape label, e.g. ``"18WF96"`` or ``"WF36X150"``.
-                Case and spaces are normalized automatically.
+            label (str): Shape label as the historic table's ``Name`` column
+                spells it, e.g. ``"18WF96"`` or ``"36WF150"``. Case and spaces
+                are normalized automatically.
             designation (str, optional): AISC historic edition designation used to
                 disambiguate shapes that were published under multiple editions.
-                Example: ``'18WF_B18b'``. If ``None``, returns the first match.
+                Example: ``'18WF_B18b'``. Required when the name appears under
+                more than one designation.
+
+        Raises:
+            KeyError: The name is not in the historic table (the message lists
+                close names), or it has no row with ``designation``.
+            ValueError: The name is under several designations and none was given.
         """
         self.id = self.clean_user_input(label)
         self.aisc_value = self.get_historical_shape(designation)
@@ -702,32 +718,19 @@ class HistoricSteelSection:
         :param self:
         :return: dataframe of raw values from AISC Shape Table
         """
+        shape_values = historic_steel_tables[historic_steel_tables["Name"] == self.id]
+        if shape_values.empty:
+            raise KeyError(_not_found(self.id, historic_steel_tables["Name"], "historic shape"))
+        designations = shape_values["Designation"].tolist()
         if designation:
-            try:
-                shape_values = historic_steel_tables[
-                    (historic_steel_tables["Name"] == self.id) &
-                    (historic_steel_tables["Designation"] == designation)
-                ]
-                return shape_values
-            except KeyError as e:  # pragma: no cover
-                print(
-                    "Value not found in shape table,"
-                    "check spelling and try again"
-                    f"\n\n{e}"
-                )
-        else:
-            try:
-                shape_values = historic_steel_tables[historic_steel_tables["Name"] == self.id]
-                if len(shape_values) > 1:
-                    raise Exception('Multiple values found for "' + self.id + '", use the Designation column to specify')
-                else:
-                    return shape_values
-            except KeyError as e:  # pragma: no cover
-                print(
-                    "Value not found in shape table,"
-                    "check spelling and try again"
-                    f"\n\n{e}"
-                )
+            shape_values = shape_values[shape_values["Designation"] == designation]
+            if shape_values.empty:
+                raise KeyError(f"{self.id} has no designation {designation!r}; "
+                               f"choose one of {designations}")
+        elif len(shape_values) > 1:
+            raise ValueError(f"{self.id} is listed under several designations {designations}; "
+                             f"pass designation= to pick one")
+        return shape_values
 
 
 class WF(HistoricSteelSection):
@@ -814,7 +817,7 @@ class WF(HistoricSteelSection):
         # These values are used in most shapes, but not all, hence the ifs
         self.slenderness_ratio_flange = conv_frac_str(
             self.aisc_value["bf/2tf"].values[0]
-        ) * units("in")
+        )
         self.k1 = conv_frac_str(self.aisc_value["k1"].values[0]) * units("in")
 
         # self.fastener_workable_gage = conv_frac_str(

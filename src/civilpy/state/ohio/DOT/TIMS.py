@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 import requests
 import pandas as pd
 from datetime import datetime, timedelta
@@ -62,12 +63,28 @@ NBI_DESIGN_TYPE_CODES = {
 }
 
 
-def get_tims_data(data_source='Roadway', where='1=1'):
+class TIMSDownloadError(RuntimeError):
+    """A TIMS layer download stopped before the last page.
+
+    Raised instead of returning the rows fetched so far, so a dropped
+    connection can never pass for a complete inventory. ``partial`` holds
+    those rows (a DataFrame) for a caller that wants to inspect them.
+    """
+
+    def __init__(self, message, partial):
+        super().__init__(message)
+        self.partial = partial
+
+
+def get_tims_data(data_source='Roadway', where='1=1', retries=3, backoff=2.0):
     """
     Download records from an ODOT TIMS ArcGIS MapServer layer into a DataFrame.
 
     Paginates through the service in batches of 1000 records until all matching
-    features are retrieved. Prints progress to stdout.
+    features are retrieved. Prints progress to stdout. A page that fails
+    (connection dropped, HTTP error, or an ArcGIS ``{"error": ...}`` body) is
+    retried; if it still fails the download raises rather than returning a
+    partial table.
 
     Args:
         data_source (str): Which TIMS layer to query. One of:
@@ -78,10 +95,17 @@ def get_tims_data(data_source='Roadway', where='1=1'):
         where (str): A SQL ``WHERE`` clause used to filter the layer server-side.
             Defaults to ``'1=1'`` (all records). Pass a filter to pull a small,
             fast subset, e.g. ``"COUNTY_CD='ATH'"`` for one county's bridges.
+        retries (int): Extra attempts per page after the first fails.
+        backoff (float): Seconds to wait before the first retry; doubles on
+            each further retry.
 
     Returns:
         pandas.DataFrame: All matching feature attributes, one row per feature.
         Returns an empty DataFrame if no records are found.
+
+    Raises:
+        TIMSDownloadError: A page still failed after ``retries`` retries. The
+            rows fetched before it are on the exception's ``partial``.
 
     Example:
         >>> df = get_tims_data('Bridge', where="COUNTY_CD='ATH'")
@@ -117,40 +141,48 @@ def get_tims_data(data_source='Roadway', where='1=1'):
             'f': 'json'
         }
 
-        try:
-            response = requests.post(query_url, data=params)
-            response.raise_for_status()
-            data = response.json()
-
-            # Check for features in the response
-            features = data.get('features', [])
-
-            if not features:
-                print(f"No more features found. Fetched {offset} total records.")
+        for attempt in range(retries + 1):
+            try:
+                response = requests.post(query_url, data=params)
+                response.raise_for_status()
+                data = response.json()
+                if 'error' in data:
+                    # ArcGIS reports query failures in a 200 response body
+                    raise requests.exceptions.HTTPError(f"ArcGIS error: {data['error']}")
                 break
+            except Exception as err:
+                if attempt == retries:
+                    raise TIMSDownloadError(
+                        f"TIMS {data_source} download failed at offset {offset} after "
+                        f"{retries + 1} attempts ({len(all_attributes)} records fetched): {err}",
+                        pd.DataFrame(all_attributes)) from err
+                wait = backoff * 2 ** attempt
+                print(f"Error at offset {offset}: {err}. Retrying in {wait:g} s "
+                      f"({attempt + 1}/{retries})")
+                time.sleep(wait)
 
-            # Extract attributes and add to the main list
-            attributes_list = [feature['attributes'] for feature in features]
-            all_attributes.extend(attributes_list)
+        # Check for features in the response
+        features = data.get('features', [])
 
-            print(f"Fetched {len(attributes_list)} records. Total so far: {len(all_attributes)}")
-
-            # Increment the offset for the next loop iteration
-            offset += BATCH_SIZE
-
-        except requests.exceptions.HTTPError as err:
-            print(f"HTTP Error: {err}")
+        if not features:
+            print(f"No more features found. Fetched {len(all_attributes)} total records.")
             break
-        except Exception as err:
-            print(f"An error occurred: {err}")
-            break
+
+        # Extract attributes and add to the main list
+        attributes_list = [feature['attributes'] for feature in features]
+        all_attributes.extend(attributes_list)
+
+        print(f"Fetched {len(attributes_list)} records. Total so far: {len(all_attributes)}")
+
+        # Increment the offset for the next loop iteration
+        offset += BATCH_SIZE
 
     # Build the final DataFrame from all collected attributes
+    df = pd.DataFrame(all_attributes)
     if all_attributes:
-        df = pd.DataFrame(all_attributes)
         print("DataFrame successfully created with shape:", df.shape)
     else:
-        print("Failed to retrieve any data.")
+        print("No records matched.")
 
     return df
 
