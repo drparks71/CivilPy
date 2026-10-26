@@ -138,6 +138,7 @@ all = [
 Homepage = "https://daneparks.com/Dane/civilpy"
 Documentation = "https://dane.daneparks.com/civilpy"
 Repository = "https://daneparks.com/Dane/civilpy"
+"GitHub Mirror" = "https://github.com/drparks71/civilpy"
 
 [project.scripts]
 civilpy = "civilpy.cli:civilpy_cli"
