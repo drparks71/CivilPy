@@ -1078,6 +1078,49 @@ def midas_payloads(model: "StructuralModel", *, node_start: int = 1,
     return payloads
 
 
+#: Send order for the construction-stage tables (groups and loads must already be in the model).
+STAGE_TABLE_ORDER = ("TDMT", "TDME", "TMAT", "BNGR", "STAG", "STCT", "CSCS")
+
+
+def push_stage_tables(midas, tables: dict, *, base_stage: bool = True) -> dict:
+    """Send construction-stage tables (``ConstructionSequence.to_midas()``
+    plus any :func:`time_dependent_material_blocks`) to a live Civil NX
+    session in :data:`STAGE_TABLE_ORDER`.
+
+    Stage writes are legal in **Base Stage** only: with ``base_stage`` the
+    session is flipped back to preprocessing first
+    (:func:`civilpy.state.ohio.DOT.midas_bridge.ensure_base_stage`), which
+    discards analysis results.  A license refusal (``MidasLicenseError``, a
+    Plus license and more than 10 stages) stops the push and is reported
+    under the table that raised it; other errors are reported per table and
+    the push continues.  Keys of ``tables`` that start with ``_`` (notes) are
+    ignored.  Returns ``{table: {"sent": n} | {"error": msg}}``."""
+    from civilpy.structural.midas import MidasLicenseError
+    report: dict = {}
+    if base_stage:
+        try:
+            from civilpy.state.ohio.DOT.midas_bridge import ensure_base_stage
+            report["_base_stage"] = {"sent": int(bool(ensure_base_stage(midas)))}
+        except Exception as exc:                      # pragma: no cover - import / transport
+            report["_base_stage"] = {"error": str(exc)}
+    pending = {k: v for k, v in tables.items() if not k.startswith("_")}
+    unknown = [k for k in pending if k not in STAGE_TABLE_ORDER]
+    if unknown:
+        raise ValueError(f"not construction-stage tables: {unknown}; order is {STAGE_TABLE_ORDER}")
+    for table in STAGE_TABLE_ORDER:
+        if table not in pending:
+            continue
+        try:
+            midas.put_db(table, pending[table])
+            report[table] = {"sent": len(pending[table])}
+        except MidasLicenseError as exc:
+            report[table] = {"error": f"license: {exc}"}
+            break
+        except Exception as exc:
+            report[table] = {"error": str(exc)}
+    return report
+
+
 def push_midas(model: "StructuralModel", midas=None, **client_kwargs) -> dict:
     """Send a hub to a live Civil NX session (built from ``~/secrets.json`` when
     ``midas`` is not given).  Pushes each :func:`midas_payloads` table in order,

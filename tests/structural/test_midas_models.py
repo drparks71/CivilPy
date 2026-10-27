@@ -651,3 +651,32 @@ def test_time_dependent_material_blocks_shapes_and_units():
     assert inch["TDMT"]["1"]["STR"] == pytest.approx(4500) and inch["TDMT"]["1"]["VOL"] == pytest.approx(3.5)
     with pytest.raises(ValueError):
         mm.time_dependent_material_blocks("x", matl_id=1, fc_psi=4000, force_unit="KN")
+
+
+def test_push_stage_tables_order_and_license_stop():
+    from civilpy.structural.construction_sequence import ConstructionSequence, ElementActivation, LoadActivation, Stage
+    from civilpy.structural.midas import MidasLicenseError
+    seq = ConstructionSequence([Stage("S1", 10, activate=[ElementActivation("G")], loads=[LoadActivation("SW")]),
+                                Stage("S2", 0)])
+    tables = seq.to_midas()
+    tables.update(mm.time_dependent_material_blocks("C4500", matl_id=2, fc_psi=4500))
+    tables["_notes"] = ["ignored"]
+
+    class Fake:
+        def __init__(self, fail=None):
+            self.calls, self.fail = [], fail
+
+        def put_db(self, table, assign):
+            self.calls.append(table)
+            if table == self.fail:
+                raise MidasLicenseError("10 stages max")
+
+    fake = Fake()
+    rep = mm.push_stage_tables(fake, tables, base_stage=False)
+    assert fake.calls == ["TDMT", "TDME", "TMAT", "BNGR", "STAG", "STCT"]
+    assert rep["STAG"] == {"sent": 2} and "_notes" not in rep
+    stopped = Fake(fail="STAG")
+    rep2 = mm.push_stage_tables(stopped, tables, base_stage=False)
+    assert stopped.calls[-1] == "STAG" and "license" in rep2["STAG"]["error"] and "STCT" not in rep2
+    with pytest.raises(ValueError):
+        mm.push_stage_tables(Fake(), {"NODE": {}}, base_stage=False)
