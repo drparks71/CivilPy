@@ -130,3 +130,47 @@ def test_two_reinforcing_groups_stack_inward_on_channels():
     # legacy unbracketed form still means reinforcement on channels
     assert builtup.properties("2C15x0.52x3.52x0.65 2P12x7/16 W16.5")["A"] == pytest.approx(
         builtup.properties("2C15x0.52x3.52x0.65 [2P12x7/16] W16.5")["A"])
+
+
+# ---------------------------------------------------------------- single web plate + four angles (built-up I)
+import itertools as _it
+
+import pytest as _pt
+
+from civilpy.structural import builtup as _bu
+
+_SINGLE_WEB = [(d, tw, a, b, ta) for d, tw, (a, b, ta) in _it.product(
+    (15.75, 16.0, 16.25), (0.375, 0.4375, 0.5, 0.625), ((5.0, 3.5, 0.5625), (6.0, 4.0, 0.75), (5.0, 3.5, 0.5)))]
+
+
+@_pt.mark.parametrize("d,tw,a,b,ta", _SINGLE_WEB)
+def test_single_web_builtup_i_is_plate_plus_four_angles(d, tw, a, b, ta):
+    """'1 PL d x tw + 4 L a x b x ta': one plate at the centre, angles back to back on both faces; area, symmetry,
+    envelope and the TranSystems equivalent-I convention (web = plate, flanges = 2 x long leg x ta) all follow."""
+    spec = "1P%gx%g 4L%gx%gx%g" % (d, tw, a, b, ta)
+    p = _bu.properties(spec)
+    angle = ta * (a + b - ta)
+    assert p["A"] == _pt.approx(d * tw + 4 * angle, rel=1e-9)
+    R, (dd, B, tww, angles, covers) = _bu.rects(spec)
+    assert len(R) == 9 and covers is None and angles is not None
+    assert R[0][2] == 0.0 and R[0][3] == 0.0 and R[0][0] == tw            # the plate is at the centre
+    assert B == _pt.approx(tw + 2 * max(a, b))
+    assert _bu.envelope(spec) == _pt.approx((B, d))
+    assert p["cy_p"] == _pt.approx(p["cy_m"]) and p["cz_p"] == _pt.approx(p["cz_m"])
+    assert p["ASz"] == _pt.approx(d * tw)
+    labels = _bu.piece_labels(spec)
+    assert len(labels) == len(R) and labels[0].startswith("web plate") and sum("outstanding" in l for l in labels) == 4
+    # the same steel as TranSystems' equivalent I (strong-axis I agrees closely, area exactly)
+    eq = "I%gx%gx%gx%g" % (d, tw, 2 * max(a, b), ta)
+    assert _bu.properties(eq)["A"] == _pt.approx(d * tw + 2 * 2 * max(a, b) * ta - 2 * tw * ta, rel=1e-9)
+    # a two-plate box of the same spec text with '2P' is NOT the same section
+    assert _bu.properties("2P%gx%g 4L%gx%gx%g W16" % (d, tw, a, b, ta))["A"] > p["A"]
+
+
+def test_single_web_depth_over_angle_backs():
+    """``W`` on a single-web spec is the depth over the angle backs (gusset in-to-in), not the width."""
+    R, (d, B, tw, angles, covers) = _bu.rects("1P15.75x7/16 4L5x3.5x9/16 W16.375")
+    assert d == _pt.approx(16.375) and R[0][1] == _pt.approx(15.75)
+    assert max(z + h / 2 for _, h, _, z in R) == _pt.approx(16.375 / 2)
+    with _pt.raises(ValueError):
+        _bu.rects("1P16x7/16 4L5x3.5x9/16 [2P10x3/8]")

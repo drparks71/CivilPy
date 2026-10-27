@@ -15,6 +15,9 @@ every piece::
     "2P14x3/8 1P16x3/8 4L3.5x3.5x3/8 W16"   one cover on top only, webs 16 out-to-out
     "2C15x0.52x3.52x0.65 W16.5"        two channels, toes in, laced both faces
     "I15.86x0.407x8.464x0.645"         one rolled I (a truss vertical of the 1930s)
+    "1P16x7/16 4L5x3.5x9/16 W16.375"   ONE web plate with four angles back to back:
+                                       the built-up I post / diagonal (W = depth
+                                       over the angle backs, the gusset in-to-in)
 
 This module turns that shorthand back into geometry: :func:`rects` gives
 the rectangles the section is actually made of, which is what a LOD 400
@@ -205,6 +208,27 @@ def rects(spec: str):
                 R.append((t, dr, s * (inner + t / 2), 0.0))
             inner += t
         angles = None
+    elif x["webs"][0] == 1:
+        # ONE web plate with four angles: the built-up I of a 1930s truss post or diagonal ("1 PL 16 x 7/16 +
+        # 4 L 5 x 3 1/2 x 9/16, 1'-4 3/8 B-B Ls").  The plate stands at the centre, the angles sit back to back
+        # on both faces at the top and bottom edges with the LONGER leg outstanding (the flange), and ``W`` -
+        # when given - is the depth over the angle backs (the gusset in-to-in), which may exceed the plate depth
+        # when the angle heels project past the plate edge.
+        _n, d_p, tw = x["webs"]
+        angles = x["angles"]
+        n_a, a, b, ta = angles
+        horiz, vert = max(a, b), min(a, b)
+        d = x["width"] if x["width"] else d_p
+        B = tw + 2 * horiz
+        R.append((tw, d_p, 0.0, 0.0))
+        for sy in (-1, 1):
+            for sz in (-1, 1):
+                # outstanding leg (the flange), its back on the plate face
+                R.append((horiz, ta, sy * (tw / 2 + horiz / 2), sz * (d / 2 - ta / 2)))
+                # the leg along the plate, below / above the outstanding leg
+                R.append((ta, vert - ta, sy * (tw / 2 + ta / 2), sz * (d / 2 - ta - (vert - ta) / 2)))
+        if x["reinf"]:
+            raise ValueError("reinforcing plates on a single-web built-up I are not supported: %r" % spec)
     else:
         n_w, d, t_w = x["webs"]
         tw = t_w * n_w / 2                  # total web thickness per side
@@ -257,6 +281,14 @@ def piece_labels(spec: str) -> list[str]:
         for n_r, dr, tr in x["reinf"] or ():
             out += ["web reinforcing plate %gx%g %s (x%d)" % (dr, tr, s, max(1, n_r // 2))
                     for s in ("S", "N")]
+    elif x["webs"][0] == 1:
+        n_w, d, t_w = x["webs"]
+        n_a, a, b, ta = x["angles"]
+        out.append("web plate %gx%g" % (d, t_w))
+        for sy in ("S", "N"):
+            for sz in ("bottom", "top"):
+                out.append("angle L%gx%gx%g %s %s outstanding leg" % (a, b, ta, sy, sz))
+                out.append("angle L%gx%gx%g %s %s web leg" % (a, b, ta, sy, sz))
     else:
         n_w, d, t_w = x["webs"]
         n_a, a, b, ta = x["angles"]
@@ -330,6 +362,8 @@ def properties(spec: str) -> dict:
         J = sum(max(b, h) * min(b, h) ** 3 / 3 for b, h, _, _ in R)
     if x["rolled_i"]:
         asz = tw * (d - 2 * x["rolled_i"][3])
+    elif x["webs"] and x["webs"][0] == 1:
+        asz = tw * x["webs"][1]             # the one web plate
     else:
         asz = 2 * tw * d
     for n_r, dr, tr in x["reinf"] or ():
