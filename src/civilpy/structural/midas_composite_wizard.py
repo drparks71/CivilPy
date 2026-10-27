@@ -107,6 +107,18 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Iterable, Sequence
 
+from civilpy.structural.construction_sequence import (
+    AnalysisControl,
+    BoundaryActivation,
+    CompositePart,
+    CompositeSection,
+    ConstructionSequence,
+    ElementActivation,
+    ErectionLoad,
+    LoadActivation,
+    Stage,
+)
+
 
 # ------------------------------------------------------------------ inputs
 @dataclass
@@ -772,45 +784,44 @@ STAGE_DURATIONS = (("Stage1", 10), ("Stage2", 10), ("Stage3-1", 10), ("Stage3-2"
                    ("Stage3-3", 10), ("Stage3-4", 0), ("Stage4", 10), ("Stage5", 10000))
 
 
+def wizard_sequence() -> ConstructionSequence:
+    """The wizard's stages as a :class:`ConstructionSequence`: substructure
+    first, girders + bracing with the bearings at DEFORMED position,
+    positive-zone pour as load then composite, negative-zone pour then
+    composite, after-composite loads, long-term.  Erection Load 1 = DC after
+    (Barrier), Erection Load 2 = DW (Wearing Surface); accumulative,
+    creep+shrinkage with strength variation.
+
+    Stage1 activates ``"SubstructureSupport"`` -- the group the ``CONS`` rows
+    and ``BNGR`` carry.  Until 2026-10-26 it named ``"Support"``, a group the
+    model does not have, which the sequence validation now catches."""
+    pour = (("Stage3-1", "Stage3-2", "WetConc D1", "Dummy Beam-D1"),
+            ("Stage3-3", "Stage3-4", "WetConc D2", "Dummy Beam-D2"))
+    days = dict(STAGE_DURATIONS)
+    stages = [
+        Stage("Stage1", days["Stage1"],
+              activate=[ElementActivation("Substructure", 28), ElementActivation("Coping", 28)],
+              boundaries=[BoundaryActivation("SubstructureSupport", "ORIGINAL")], loads=[LoadActivation("SW")]),
+        Stage("Stage2", days["Stage2"],
+              activate=[ElementActivation("Girder", 0), ElementActivation("Bracing", 0)],
+              boundaries=[BoundaryActivation("GirderElastic Link", "DEFORMED"),
+                          BoundaryActivation("GirderRigid Link", "DEFORMED")]),
+    ]
+    for wet_stage, hard_stage, load, deck in pour:
+        stages.append(Stage(wet_stage, days[wet_stage], loads=[LoadActivation(load)]))
+        stages.append(Stage(hard_stage, days[hard_stage], activate=[ElementActivation(deck, 1)],
+                            remove_loads=[LoadActivation(load)]))
+    stages += [Stage("Stage4", days["Stage4"], loads=[LoadActivation("DC2"), LoadActivation("DW")]),
+               Stage("Stage5", days["Stage5"])]
+    control = AnalysisControl(erection_loads=[ErectionLoad("Erection Load 1", "DC", ("Barrier",)),
+                                              ErectionLoad("Erection Load 2", "DW", ("Wearing Surface",))])
+    return ConstructionSequence(stages, boundary_groups=["SubstructureSupport", "GirderElastic Link",
+                                                         "GirderRigid Link"], control=control)
+
+
 def construction_stages() -> dict:
-    """STAG/STCT in the wizard's shape: substructure first, girders +
-    bracing with the bearings at DEFORMED position, positive-zone pour as
-    load then composite, negative-zone pour then composite, after-composite
-    loads, long-term.  Erection Load 1 = DC after (Barrier), Erection Load 2 =
-    DW (Wearing Surface); accumulative, creep+shrinkage with strength
-    variation."""
-    stag = {
-        "1": {"NAME": "Stage1", "DURATION": 10, "bSV_RSLT": True, "bSV_STEP": False, "ADD_STEP": [],
-              "ACT_ELEM": [{"GRUP_NAME": "Substructure", "AGE": 28}, {"GRUP_NAME": "Coping", "AGE": 28}],
-              "ACT_BNGR": [{"BNGR_NAME": "Support", "POS": "ORIGINAL"}], "ACT_LOAD": [{"LOAD_NAME": "SW", "DAY": "FIRST"}]},
-        "2": {"NAME": "Stage2", "DURATION": 10, "bSV_RSLT": True, "bSV_STEP": False, "ADD_STEP": [],
-              "ACT_ELEM": [{"GRUP_NAME": "Girder", "AGE": 0}, {"GRUP_NAME": "Bracing", "AGE": 0}],
-              "ACT_BNGR": [{"BNGR_NAME": "GirderElastic Link", "POS": "DEFORMED"}, {"BNGR_NAME": "GirderRigid Link", "POS": "DEFORMED"}]},
-        "3": {"NAME": "Stage3-1", "DURATION": 10, "bSV_RSLT": True, "bSV_STEP": False, "ADD_STEP": [],
-              "ACT_LOAD": [{"LOAD_NAME": "WetConc D1", "DAY": "FIRST"}]},
-        "4": {"NAME": "Stage3-2", "DURATION": 0, "bSV_RSLT": True, "bSV_STEP": False, "ADD_STEP": [],
-              "ACT_ELEM": [{"GRUP_NAME": "Dummy Beam-D1", "AGE": 1}], "DACT_LOAD": [{"LOAD_NAME": "WetConc D1", "DAY": "FIRST"}]},
-        "5": {"NAME": "Stage3-3", "DURATION": 10, "bSV_RSLT": True, "bSV_STEP": False, "ADD_STEP": [],
-              "ACT_LOAD": [{"LOAD_NAME": "WetConc D2", "DAY": "FIRST"}]},
-        "6": {"NAME": "Stage3-4", "DURATION": 0, "bSV_RSLT": True, "bSV_STEP": False, "ADD_STEP": [],
-              "ACT_ELEM": [{"GRUP_NAME": "Dummy Beam-D2", "AGE": 1}], "DACT_LOAD": [{"LOAD_NAME": "WetConc D2", "DAY": "FIRST"}]},
-        "7": {"NAME": "Stage4", "DURATION": 10, "bSV_RSLT": True, "bSV_STEP": False, "ADD_STEP": [],
-              "ACT_LOAD": [{"LOAD_NAME": "DC2", "DAY": "FIRST"}, {"LOAD_NAME": "DW", "DAY": "FIRST"}]},
-        "8": {"NAME": "Stage5", "DURATION": 10000, "bSV_RSLT": True, "bSV_STEP": False, "ADD_STEP": []},
-    }
-    stct = {"1": {"bLAST_FINAL": True, "FINAL_STAGE": "Stage5", "iINC_NLA": 0, "iNLA_TYPE": 1, "bINC_PDL": False,
-                  "bINC_TDE": True, "bCNS": True, "TYPE": "BOTH", "iITER_CR": 5, "TOL_CR": 0.01, "bOUCC": False,
-                  "bITS": False, "iITS": 2, "bATS": True, "iT10": 2, "iT100": 5, "iT1K": 7, "iT5K": 10, "iT10K": 20,
-                  "bTTLE_CS": False, "bRCE": False, "bVAR": True, "bAPPLY_ELA": False, "bTTLE_ES": False, "iTTLE_ES": 0,
-                  "vEREC": [{"LTYPECC": "Erection Load 1", "EREC": "DC", "vLCNAME": ["Barrier"]},
-                            {"LTYPECC": "Erection Load 2", "EREC": "DW", "vLCNAME": ["Wearing Surface"]}],
-                  "CPFC": "INTERNAL", "bEXT_REPL": False, "bCONV": False, "bTRUSS": False, "bBEAM": False,
-                  "bCHANGE_CABLE": False, "bAPPLY_IMF": False, "bITD": False, "ITD": "ALL", "bLFFC": False,
-                  "bCAMBER": False, "bSD": False, "iSDOPT": 0, "SDCONST": 0, "iBSC": 0,
-                  "bCALC_CFF": False, "bCALC_CSP": True, "bSELFCONS": False, "bSAVE_OCS": False}}
-    return {"BNGR": {"1": {"NAME": "SubstructureSupport", "AUTOTYPE": 0}, "2": {"NAME": "GirderElastic Link", "AUTOTYPE": 0},
-                     "3": {"NAME": "GirderRigid Link", "AUTOTYPE": 0}},
-            "STAG": stag, "STCT": stct}
+    """BNGR/STAG/STCT for :func:`wizard_sequence`."""
+    return wizard_sequence().to_midas()
 
 
 # ------------------------------------------------ post-wizard tutorial steps
@@ -827,11 +838,11 @@ def post_wizard_cscs(w: WizardInputs, *, pos_section: int, neg_section: int, dec
     mat = str(deck_material or w.matl_deck)
 
     def parts(stage):
-        return [{"PART": 1, "MTYPE": "ELEM", "MAT": "", "CSTAGE": "", "AGE": 1, "PARTINFO_H": steel_h, "PARTINFO_VS": steel_h},
-                {"PART": 2, "MTYPE": "MATL", "MAT": mat, "CSTAGE": stage, "AGE": 28, "PARTINFO_H": h_slab, "PARTINFO_VS": h_slab}]
+        return [CompositePart(1, "ELEM", age=1, h=steel_h, vs=steel_h),
+                CompositePart(2, "MATL", age=28, h=h_slab, vs=h_slab, material=mat, composite_stage=stage)]
 
-    return {"1": {"SEC": pos_section, "ASTAGE": "Stage2", "TYPE": "NORMAL", "bTAP": False, "vPARTINFO": parts("Stage3-2")},
-            "2": {"SEC": neg_section, "ASTAGE": "Stage2", "TYPE": "NORMAL", "bTAP": False, "vPARTINFO": parts("Stage3-4")}}
+    return {"1": CompositeSection(pos_section, "Stage2", parts("Stage3-2")).to_midas(),
+            "2": CompositeSection(neg_section, "Stage2", parts("Stage3-4")).to_midas()}
 
 
 def post_wizard_tapered_groups(cap_elements: dict[int, list[int]]) -> dict:
