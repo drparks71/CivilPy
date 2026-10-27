@@ -59,6 +59,7 @@ from fractions import Fraction
 
 _TOK = re.compile(r"(\d?)([PLCI])([\d/x.]+)")
 _WIDTH = re.compile(r"(?<![\w.])W(\d+(?:\.\d+)?)(?![\w.])")
+_BRACKET = re.compile(r"\[([^\]]*)\]")
 
 
 def parse(spec: str):
@@ -106,6 +107,15 @@ def parse_ex(spec: str) -> dict:
     ``reinf``, ``width``."""
     out = dict(webs=None, covers=None, angles=None, channels=None,
                rolled_i=None, reinf=None, width=None)
+    # bracketed plate groups are web reinforcing plates on any member kind:
+    # "[2P12x7/16]" = one 12 x 7/16 plate on each web; several groups allowed
+    reinf = []
+    for inner in _BRACKET.findall(spec):
+        for n, kind, dims in _TOK.findall(inner):
+            if kind == "P":
+                vals = [float(Fraction(v)) for v in dims.split("x")]
+                reinf.append((int(n) if n else 1, vals[0], vals[1]))
+    spec = _BRACKET.sub(" ", spec)
     plates = []
     for n, kind, dims in _TOK.findall(spec):
         vals = [float(Fraction(v)) for v in dims.split("x")]
@@ -122,10 +132,10 @@ def parse_ex(spec: str) -> dict:
     if m:
         out["width"] = float(m.group(1))
     if out["channels"] or out["rolled_i"]:
+        if plates and not reinf:                 # legacy form: first unbracketed group = reinforcement
+            reinf.append(plates.pop(0))
         if plates:
-            out["reinf"] = plates[0]
-        if len(plates) > 1:
-            out["covers"] = plates[1]
+            out["covers"] = plates[0]
     else:
         if plates:
             out["webs"] = plates[0]
@@ -133,6 +143,7 @@ def parse_ex(spec: str) -> dict:
             out["covers"] = plates[1]
         if out["webs"] is None or out["angles"] is None:
             raise ValueError("spec %r has no web plates and/or no angles" % spec)
+    out["reinf"] = reinf or None
     return out
 
 
@@ -174,11 +185,12 @@ def rects(spec: str):
             for sz in (-1, 1):
                 R.append((bf - tw, tf, s * (B / 2 - tw - (bf - tw) / 2),
                           sz * (d / 2 - tf / 2)))
-        if x["reinf"]:
-            n_r, dr, tr = x["reinf"]
+        inner = tw
+        for n_r, dr, tr in x["reinf"] or ():
             t = tr * n_r / 2
             for s in (-1, 1):
-                R.append((t, dr, s * (B / 2 - tw - t / 2), 0.0))
+                R.append((t, dr, s * (B / 2 - inner - t / 2), 0.0))
+            inner += t
         angles = None
     elif x["rolled_i"]:
         d, tw, bf, tf = x["rolled_i"]
@@ -186,11 +198,12 @@ def rects(spec: str):
         R.append((tw, d - 2 * tf, 0.0, 0.0))
         for sz in (-1, 1):
             R.append((bf, tf, 0.0, sz * (d / 2 - tf / 2)))
-        if x["reinf"]:
-            n_r, dr, tr = x["reinf"]
+        inner = tw / 2
+        for n_r, dr, tr in x["reinf"] or ():
             t = tr * n_r / 2
             for s in (-1, 1):
-                R.append((t, dr, s * (tw / 2 + t / 2), 0.0))
+                R.append((t, dr, s * (inner + t / 2), 0.0))
+            inner += t
         angles = None
     else:
         n_w, d, t_w = x["webs"]
@@ -209,6 +222,12 @@ def rects(spec: str):
                 # vertical leg along the web, below/above the horizontal leg
                 R.append((ta, vert - ta, sy * (yin - ta / 2),
                           sz * (d / 2 - ta - (vert - ta) / 2)))
+        inner = tw                          # reinforcing plates inside the webs, between the angles
+        for n_r, dr, tr in x["reinf"] or ():
+            t = tr * n_r / 2
+            for s in (-1, 1):
+                R.append((t, dr, s * (B / 2 - inner - t / 2), 0.0))
+            inner += t
     if covers:
         w = covers[1]
         for sz, tcov in _cover_stacks(covers):
@@ -228,16 +247,14 @@ def piece_labels(spec: str) -> list[str]:
             out.append("channel C%gx%g web %s" % (d, tw, s))
             for sz in ("bottom", "top"):
                 out.append("channel C%gx%g %s %s flange" % (d, tw, s, sz))
-        if x["reinf"]:
-            n_r, dr, tr = x["reinf"]
+        for n_r, dr, tr in x["reinf"] or ():
             out += ["web reinforcing plate %gx%g %s (x%d)" % (dr, tr, s, max(1, n_r // 2))
                     for s in ("S", "N")]
     elif x["rolled_i"]:
         d, tw, bf, tf = x["rolled_i"]
         out.append("rolled I %gx%g web" % (d, bf))
         out += ["rolled I %gx%g %s flange" % (d, bf, sz) for sz in ("bottom", "top")]
-        if x["reinf"]:
-            n_r, dr, tr = x["reinf"]
+        for n_r, dr, tr in x["reinf"] or ():
             out += ["web reinforcing plate %gx%g %s (x%d)" % (dr, tr, s, max(1, n_r // 2))
                     for s in ("S", "N")]
     else:
@@ -248,6 +265,9 @@ def piece_labels(spec: str) -> list[str]:
             for sz in ("bottom", "top"):
                 out.append("angle L%gx%gx%g %s %s outstanding leg" % (a, b, ta, sy, sz))
                 out.append("angle L%gx%gx%g %s %s web leg" % (a, b, ta, sy, sz))
+        for n_r, dr, tr in x["reinf"] or ():
+            out += ["web reinforcing plate %gx%g %s (x%d)" % (dr, tr, s, max(1, n_r // 2))
+                    for s in ("S", "N")]
     if covers:
         n_c, w, tc = covers
         for sz, tcov in _cover_stacks(covers):
@@ -312,8 +332,8 @@ def properties(spec: str) -> dict:
         asz = tw * (d - 2 * x["rolled_i"][3])
     else:
         asz = 2 * tw * d
-    if x["reinf"]:
-        asz += x["reinf"][0] * x["reinf"][1] * x["reinf"][2]
+    for n_r, dr, tr in x["reinf"] or ():
+        asz += n_r * dr * tr
     asy = sum(b * h for b, h, _, _ in R) - asz
     return {"A": A, "Iy": Iy, "Iz": Iz, "J": J, "ASy": asy, "ASz": asz,
             "cz_p": zmax, "cz_m": zmin, "cy_p": ymax, "cy_m": ymin,

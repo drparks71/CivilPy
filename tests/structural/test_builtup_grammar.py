@@ -103,3 +103,30 @@ def test_a_top_covered_member_laces_the_bottom_only():
     lm = laced_member.LacedMember(CHORD_TOP, length_ft=21.0,
                                   lacing=laced_member.LacingSpec(2.5, 0.375, double=False))
     assert {p.face for p in lm.pieces() if p.kind == "lacing bar"} == {"bottom"}
+
+
+def test_bracketed_reinforcing_plates_on_a_plate_web_box():
+    """Sheet 305: 2 PL 14 x 7/16 webs + PL 16 x 1/2 cover + 4 L 4 x 4 x 7/16 with 2 inside PL 6 x 9/16 over U8."""
+    plain = builtup.properties("2P14x7/16 1P16x1/2 4L4x4x7/16 W16")
+    reinf = builtup.properties("2P14x7/16 [2P6x9/16] 1P16x1/2 4L4x4x7/16 W16")
+    assert reinf["A"] == pytest.approx(plain["A"] + 2 * 6 * 9 / 16)
+    assert reinf["ASz"] == pytest.approx(plain["ASz"] + 2 * 6 * 9 / 16)
+    assert reinf["H"] == plain["H"] and reinf["B"] == plain["B"]          # inside the box: no change of envelope
+    R, _ = builtup.rects("2P14x7/16 [2P6x9/16] 1P16x1/2 4L4x4x7/16 W16")
+    inside = [r for r in R if r[0] == pytest.approx(9 / 16) and r[1] == 6]
+    assert len(inside) == 2 and {round(abs(r[2]), 4) for r in inside} == {round(8 - 7 / 16 - 9 / 32, 4)}
+    labels = builtup.piece_labels("2P14x7/16 [2P6x9/16] 1P16x1/2 4L4x4x7/16 W16")
+    assert sum("reinforcing" in lbl for lbl in labels) == 2 and len(labels) == len(R)
+
+
+def test_two_reinforcing_groups_stack_inward_on_channels():
+    """Sheet 314 L7-L8: 2 C15x50 + PL 15 x 1/2 + PL 12 x 1/2 per web."""
+    one = builtup.properties("2C15x0.716x3.72x0.65 [2P15x1/2] W16.5")
+    two = builtup.properties("2C15x0.716x3.72x0.65 [2P15x1/2] [2P12x1/2] W16.5")
+    assert two["A"] == pytest.approx(one["A"] + 2 * 12 * 0.5)
+    R, _ = builtup.rects("2C15x0.716x3.72x0.65 [2P15x1/2] [2P12x1/2] W16.5")
+    ys = sorted({round(abs(r[2]), 4) for r in R if r[1] in (15, 12) and r[0] == 0.5})
+    assert ys == [round(16.5 / 2 - 0.716 - 0.5 - 0.25, 4), round(16.5 / 2 - 0.716 - 0.25, 4)]
+    # legacy unbracketed form still means reinforcement on channels
+    assert builtup.properties("2C15x0.52x3.52x0.65 2P12x7/16 W16.5")["A"] == pytest.approx(
+        builtup.properties("2C15x0.52x3.52x0.65 [2P12x7/16] W16.5")["A"])
