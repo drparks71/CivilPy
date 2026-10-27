@@ -247,3 +247,11 @@ def test_shop_bill_fractions():
     assert _frac_in(23.9583 * 12) == "287-1/2"
     assert _frac_in(3.8333 * 12) == "46"
     assert _frac_in(2.6) == "2.6"                 # not a shop fraction
+
+
+def test_pieces_of_a_box_with_two_reinforcing_groups():
+    from civilpy.structural import laced_member as lm
+    m = lm.LacedMember("2P14x7/16 [2P12.5x3/8] [2P6x3/8] 1P16x1/2 4L4x4x3/8 W16", length_ft=10.0, lacing=None)
+    reinf = [p for p in m.bare_pieces() if p.kind == "web reinforcing plate"]
+    assert len(reinf) == 4
+    assert {p.label for p in reinf} == {"PL 12-1/2 x 3/8", "PL 6 x 3/8"}

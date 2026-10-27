@@ -48,6 +48,8 @@ cancel. What the catalogue adds is the identity and the centroid.
 """
 from __future__ import annotations
 
+import re
+
 import math
 from dataclasses import dataclass, field
 
@@ -245,7 +247,8 @@ class LacedMember:
                 dn = ""
             elif "reinforcing" in name:
                 kind = "web reinforcing plate"
-                label = "PL %s x %s" % (_frac(x["reinf"][1]), _frac(x["reinf"][2]))
+                m = re.search(r"plate ([\d.]+)x([\d.]+)", name)     # several groups: dims from the label itself
+                label = "PL %s x %s" % (_frac(float(m.group(1))), _frac(float(m.group(2)))) if m else "PL"
                 dn = ""
             else:
                 kind = "web plate"
