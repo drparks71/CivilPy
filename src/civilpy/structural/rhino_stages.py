@@ -18,6 +18,10 @@ Every drawn object that belongs to a MIDAS element group gets User Text
 ``removed_stage``       the stage that deactivates the group (only when one does)
 ======================  ==========================================================
 
+and the same keys again under the ``stage.`` namespace, so
+:mod:`civilpy.structural.ifc_emit` exports them as the ``CivilPy_stage``
+property set (Synchro / Navisworks read the schedule from there).
+
 :func:`stage_tags` gives the dict for one group; :func:`tag_objects` writes
 them onto :class:`~civilpy.structural.rhino_bim.EmitObject` tags (by a
 ``group_of`` callback or a ``bim.type`` / ``bim.id`` -> group mapping) before
@@ -33,7 +37,12 @@ from collections.abc import Callable, Iterable, Mapping
 __all__ = ["STAGE_TAG_KEYS", "stage_tags", "tag_objects", "stage_filter"]
 
 STAGE_TAG_KEYS = ("midas_group", "stage", "stage_order", "stage_start_day", "stage_finish_day", "start", "finish",
-                  "removed_stage")
+                  "removed_stage", "removed_day")
+
+#: Namespace prefix for the IFC export (:mod:`civilpy.structural.ifc_emit` makes one property set per
+#: ``<ns>.`` prefix, so the 4-D tags arrive as ``CivilPy_stage``).  Rhino User Text keeps the bare keys
+#: (the Grasshopper slider reads ``start`` / ``finish``), and both are written.
+IFC_NAMESPACE = "stage"
 
 
 def stage_tags(sequence, group: str) -> dict[str, str]:
@@ -76,6 +85,7 @@ def tag_objects(objects: Iterable, sequence, group_of: Callable[[object], str | 
         if g not in cache:
             cache[g] = stage_tags(sequence, g)
         o.tags.update(cache[g])
+        o.tags.update({f"{IFC_NAMESPACE}.{k}": v for k, v in cache[g].items()})
         n += 1
     return n
 

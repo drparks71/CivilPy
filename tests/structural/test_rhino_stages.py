@@ -36,6 +36,7 @@ def test_tag_objects_by_mapping_and_callable():
             EmitObject("point", "L", ((0, 0, 0),), {"bim.type": "pier", "bim.id": "P1"})]
     n = tag_objects(objs, _seq(), {"girder": "Girder", "S1": "Deck"})
     assert n == 2 and objs[0].tags["stage"] == "Steel" and objs[1].tags["stage_order"] == "3"
+    assert objs[0].tags["stage.stage"] == "Steel" and objs[0].tags["stage.midas_group"] == "Girder"   # IFC namespace
     assert "stage" not in objs[2].tags
     n2 = tag_objects(objs, _seq(), lambda o: "Substructure" if o.tags["bim.type"] == "pier" else None)
     assert n2 == 1 and objs[2].tags["stage"] == "Piers"
