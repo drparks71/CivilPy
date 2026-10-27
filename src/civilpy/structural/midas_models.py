@@ -152,6 +152,41 @@ def concrete_material_block(name: str = "Class-S-4500", *, matl_id: int = 1,
     }}
 
 
+def time_dependent_material_blocks(name: str, *, matl_id: int, fc_psi: float,
+                                   humidity_pct: float = 70.0, v_s_in: float = 3.5,
+                                   curing_age_days: float = 3.0,
+                                   tdmt_id: int = 1, tdme_id: int = 1,
+                                   force_unit: str = "KIPS", length_unit: str = "ft",
+                                   strength_a: float = 4.0, strength_b: float = 0.85) -> dict:
+    """Time-dependent concrete for a construction stage analysis: ``TDMT``
+    (creep / shrinkage, AASHTO code form), ``TDME`` (compressive-strength
+    development, ACI) and the ``TMAT`` row linking them to material
+    ``matl_id`` -- the shapes read back from the Civil NX girder wizard
+    (:func:`civilpy.structural.midas_composite_wizard.property_tables`).
+
+    Inputs are the ones :mod:`civilpy.structural.aashto.lrfd.creep_shrinkage`
+    takes: ``fc_psi`` (28-day strength), ambient relative ``humidity_pct``,
+    volume-to-surface ratio ``v_s_in`` (inches; MIDAS ``VOL`` in the model
+    length unit) and the age at the end of curing (``AGE``).  ``strength_a`` /
+    ``strength_b`` are the ACI 209 strength-gain constants ``f'c(t) = f'c t /
+    (a + b t)``; 4.0 / 0.85 is moist-cured Type I cement, the wizard's
+    values.  Strength is carried in the model stress unit (ksf for kips / ft,
+    psi for lbf / in)."""
+    per_ft = _length_ft_per(length_unit)
+    force = {"KIPS": 1.0 / 1000.0, "KIP": 1.0 / 1000.0, "LBF": 1.0, "LB": 1.0}.get(force_unit.upper())
+    if force is None:
+        raise ValueError(f"force unit {force_unit!r}: use KIPS or LBF")
+    stress = fc_psi * force * (12.0 * per_ft) ** 2            # psi -> force / length^2
+    cs_name, comp_name = f"{name} C&S"[:16], f"{name} Comp"[:16]
+    return {
+        "TDMT": {str(tdmt_id): {"NAME": cs_name, "CODE": "AASHTO", "STR": round(stress, 6), "HU": humidity_pct,
+                                "VOL": round(v_s_in / 12.0 / per_ft, 6), "AGE": curing_age_days, "bEXPOSE": False}},
+        "TDME": {str(tdme_id): {"NAME": comp_name, "TYPE": "CODE", "CODENAME": "ACI", "STRENGTH": round(stress, 6),
+                                "A": strength_a, "B": strength_b}},
+        "TMAT": {str(matl_id): {"TDMT_NAME": cs_name, "TDME_NAME": comp_name}},
+    }
+
+
 #: Feet per unit of a model's ``UNIT`` DIST setting.  ``ELAST`` scales with
 #: this squared (force/length^2) and ``DEN`` with its cube (force/length^3).
 _FT_PER = {"ft": 1.0, "feet": 1.0, "foot": 1.0,
@@ -826,7 +861,10 @@ def midas_payloads(model: "StructuralModel", *, node_start: int = 1,
     to MIDAS ``PUT /db/*`` assign bodies -- the **Rhino -> Midas** payload step.
 
     Pure (no live session): returns ``{table: assign}`` in send order
-    ``UNIT, MATL, SECT, NODE, ELEM, CONS, STLD, CNLD``.  The hub's stable string
+    ``UNIT, MATL, SECT, [THIK], NODE, ELEM, [GRUP], [FRLS], [RIGD], CONS, STLD,
+    [LDGR], [BODF], CNLD, [BMLD]`` -- the bracketed tables only when the model
+    carries element groups (:meth:`StructuralModel.set_group`), load groups,
+    self weight, releases or rigid links.  The hub's stable string
     ids are mapped to the 1-based integer ids MIDAS uses (node insertion order);
     full 6-DOF restraints become the 7-char ``CONS`` flag string via
     :meth:`Restraint.to_constraint_string`, so ``fix_z/rx/ry/rz`` reach MIDAS
@@ -938,7 +976,8 @@ def midas_payloads(model: "StructuralModel", *, node_start: int = 1,
     # emits no STLD, and MIDAS then rejects the solve with "Load information
     # has not been entered for Analysis."
     cases = [c for c in model.cases()
-             if model.loads_in_case(c) or model.beam_loads_in_case(c)]
+             if model.loads_in_case(c) or model.beam_loads_in_case(c)
+             or any(b.case == c for b in model.body_forces)]
     static_loads = {
         str(i): {"NAME": name, "TYPE": "USER", "DESC": ""}
         for i, name in enumerate(cases, start=1)
@@ -949,7 +988,7 @@ def midas_payloads(model: "StructuralModel", *, node_start: int = 1,
             continue
         body = nodal_loads.setdefault(str(node_int[load.node_id]), {"ITEMS": []})
         body["ITEMS"].append({
-            "ID": len(body["ITEMS"]) + 1, "LCNAME": load.case, "GROUP_NAME": "",
+            "ID": len(body["ITEMS"]) + 1, "LCNAME": load.case, "GROUP_NAME": load.group,
             "FX": load.fx, "FY": load.fy, "FZ": load.fz,
             "MX": load.mx, "MY": load.my, "MZ": load.mz,
         })
@@ -963,6 +1002,17 @@ def midas_payloads(model: "StructuralModel", *, node_start: int = 1,
         payloads["THIK"] = thik
     payloads["NODE"] = nodes
     payloads["ELEM"] = elements
+    # Structure groups -> /db/GRUP (the wizard's shape: the elements and their
+    # nodes).  Construction stages activate elements by these names.
+    groups = model.element_groups()
+    if groups:
+        elem_int_g = {elem.id: j for j, elem in enumerate(model.elements.values(), start=elem_start)}
+        grup: dict = {}
+        for i, (name, eids) in enumerate(groups.items(), start=1):
+            n_list = sorted({node_int[n] for eid in eids for n in model.elements[eid].nodes})
+            grup[str(i)] = {"NAME": name, "P_TYPE": 0, "N_LIST": n_list,
+                            "E_LIST": sorted(elem_int_g[eid] for eid in eids)}
+        payloads["GRUP"] = grup
     if releases:
         payloads["FRLS"] = releases
     # Rigid (master-slave) links -> /db/RIGD. The DOF flag string is sent as an
@@ -984,6 +1034,14 @@ def midas_payloads(model: "StructuralModel", *, node_start: int = 1,
         payloads["CONS"] = constraint_assign(cons)
     if static_loads:
         payloads["STLD"] = static_loads
+    # Load groups -> /db/LDGR, before the loads that name them.
+    load_groups = model.load_groups()
+    if load_groups:
+        payloads["LDGR"] = {str(i): {"NAME": g} for i, g in enumerate(load_groups, start=1)}
+    # Self weight -> /db/BODF (the wizard's shape; FV = gravity factors).
+    if model.body_forces:
+        payloads["BODF"] = {str(i): {"LCNAME": b.case, "GROUP_NAME": b.group, "FV": [b.gx, b.gy, b.gz]}
+                            for i, b in enumerate(model.body_forces, start=1)}
     if nodal_loads:
         payloads["CNLD"] = nodal_loads
 
@@ -1008,7 +1066,7 @@ def midas_payloads(model: "StructuralModel", *, node_start: int = 1,
             body["ITEMS"].append({
                 "ID": len(body["ITEMS"]) + 1,
                 "LCNAME": bload.case,
-                "GROUP_NAME": "",
+                "GROUP_NAME": bload.group,
                 "CMD": "BEAM",
                 "DIRECTION": bload.direction,
                 "USE_PROJECTION": False,

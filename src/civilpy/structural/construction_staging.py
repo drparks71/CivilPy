@@ -37,9 +37,15 @@ kip/ft, negative ``GZ`` = downward (matching the DC/DW convention).
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Iterable, Sequence
+from dataclasses import dataclass, field
 
 from civilpy.structural.bridge_layout import CONCRETE_UNIT_WT_KCF
+
+#: Forms, screed rail and construction live load carried with the wet deck
+#: (lb/ft^2 of deck); a nominal allowance -- the contractor's falsework
+#: submittal governs.
+FORMS_PSF = 10.0
 
 #: HL-93 design lane load (AASHTO LRFD 3.6.1.2.4), kip/ft per 10 ft lane.
 LANE_LOAD_KLF = 0.64
@@ -315,3 +321,85 @@ def add_closure_pour_load(model, layout, edge_girder_line: int, *,
     for e in elems:
         model.add_beam_load(e.id, w_klf, case=case)
     return w_klf
+
+
+# ── wet-concrete deck pours (construction stages) ───────────────────────────
+
+def wet_concrete_plf(trib_width_ft: float, slab_t_in: float, *, haunch_t_in: float = 0.0,
+                     haunch_w_in: float = 0.0, forms_psf: float = FORMS_PSF,
+                     unit_wt_kcf: float = CONCRETE_UNIT_WT_KCF) -> float:
+    """Weight per foot of girder (lb/ft) of the plastic deck it carries: slab
+    over the tributary width, the haunch over the flange, forms allowance."""
+    slab = unit_wt_kcf * 1000.0 * slab_t_in / 12.0 * trib_width_ft
+    haunch = unit_wt_kcf * 1000.0 * haunch_t_in / 12.0 * haunch_w_in / 12.0
+    return slab + haunch + forms_psf * trib_width_ft
+
+
+@dataclass(frozen=True)
+class PourSegment:
+    """Part of a girder element covered by a pour: ``start`` / ``end`` as
+    fractions of the element length (the MIDAS ``D`` convention)."""
+    element_id: str
+    start: float = 0.0
+    end: float = 1.0
+    trib_width_ft: float | None = None      # overrides the pour's width for this element
+
+
+@dataclass
+class DeckPourLoad:
+    """One deck placement as wet-concrete beam loads: the elements (or parts
+    of elements) it covers, the tributary width, the slab / haunch geometry
+    and the MIDAS load case and load group the stage switches on and off."""
+    name: str
+    segments: list[PourSegment]
+    trib_width_ft: float
+    slab_t_in: float
+    case: str
+    group: str
+    haunch_t_in: float = 0.0
+    haunch_w_in: float = 0.0
+    forms_psf: float = FORMS_PSF
+    unit_wt_kcf: float = CONCRETE_UNIT_WT_KCF
+    note: str = ""
+
+    def plf(self, segment: PourSegment | None = None) -> float:
+        w = segment.trib_width_ft if segment is not None and segment.trib_width_ft is not None else self.trib_width_ft
+        return wet_concrete_plf(w, self.slab_t_in, haunch_t_in=self.haunch_t_in, haunch_w_in=self.haunch_w_in,
+                                forms_psf=self.forms_psf, unit_wt_kcf=self.unit_wt_kcf)
+
+
+def segments_by_station(elements: Sequence[tuple[str, float, float]], from_sta: float, to_sta: float) -> list[PourSegment]:
+    """The parts of a girder line between two stations.  ``elements`` =
+    ``[(element id, station at i, station at j)]`` along the line; elements
+    partly inside the pour get start / end fractions."""
+    out = []
+    lo, hi = min(from_sta, to_sta), max(from_sta, to_sta)
+    for eid, s0, s1 in elements:
+        a, b = min(s0, s1), max(s0, s1)
+        if b <= lo or a >= hi or b == a:
+            continue
+        f0 = max(0.0, (lo - a) / (b - a))
+        f1 = min(1.0, (hi - a) / (b - a))
+        if s1 < s0:                                   # element runs against the stationing
+            f0, f1 = 1.0 - f1, 1.0 - f0
+        out.append(PourSegment(eid, round(f0, 6), round(f1, 6)))
+    return out
+
+
+def add_pour_loads(model, pours: Iterable[DeckPourLoad]) -> dict[str, float]:
+    """Apply every pour's wet concrete to the hub as downward (``GZ``) beam
+    loads in its case and load group; returns ``{pour name: total kips}``
+    (from the element lengths in the model) for the load summary."""
+    totals: dict[str, float] = {}
+    for p in pours:
+        tot = 0.0
+        for seg in p.segments:
+            e = model.elements[seg.element_id]
+            ni, nj = model.nodes[e.node_a], model.nodes[e.node_b]
+            length = ((nj.x - ni.x) ** 2 + (nj.y - ni.y) ** 2 + (nj.z - ni.z) ** 2) ** 0.5
+            w = -p.plf(seg) / 1000.0
+            model.add_beam_load(seg.element_id, w, case=p.case, group=p.group, direction="GZ",
+                                start=seg.start, end=seg.end)
+            tot += -w * length * (seg.end - seg.start)
+        totals[p.name] = tot
+    return totals

@@ -66,7 +66,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field, replace
-from typing import Literal
+from typing import Iterable, Literal
 
 # ── DOF / restraint conventions ───────────────────────────────────────────────
 
@@ -293,6 +293,8 @@ class BeamLoad:
     w_start: float  # kip/ft (kips for a point load)
     w_end: float | None = None  # if None, uniform
     case: str = "default"
+    #: MIDAS load group (``LDGR``); "" = none.
+    group: str = ""
     #: MIDAS load direction: global ``"GX"``/``"GY"``/``"GZ"`` or element
     #: local ``"LX"``/``"LY"``/``"LZ"``.
     direction: Literal["GX", "GY", "GZ", "LX", "LY", "LZ"] = "GZ"
@@ -327,6 +329,9 @@ class Load:
     my: float = 0.0
     mz: float = 0.0
     case: str = "default"
+    #: MIDAS load group (``LDGR``) the load belongs to; "" = none.  Construction
+    #: stages switch loads on and off by group.
+    group: str = ""
     id: str = field(default_factory=_new_id)
 
     @property
@@ -357,6 +362,8 @@ class BodyForce:
     gx: float = 0.0
     gy: float = 0.0
     gz: float = -1.0
+    #: MIDAS load group (``LDGR``); "" = none.
+    group: str = ""
 
 
 @dataclass
@@ -487,13 +494,13 @@ class StructuralModel:
     def add_load(self, node_id: str, *, fx: float = 0.0, fy: float = 0.0,
                  fz: float = 0.0, mx: float = 0.0, my: float = 0.0,
                  mz: float = 0.0, case: str = "default",
-                 id: str | None = None) -> Load:
+                 id: str | None = None, group: str = "") -> Load:
         if node_id not in self.nodes:
             raise KeyError(f"load references unknown node id {node_id!r}")
         if case not in self.load_cases:
             self.load_cases[case] = LoadCase(name=case)
         load = Load(node_id, fx=fx, fy=fy, fz=fz, mx=mx, my=my, mz=mz,
-                    case=case, **({"id": id} if id else {}))
+                    case=case, group=group, **({"id": id} if id else {}))
         self.loads.append(load)
         return load
 
@@ -516,7 +523,8 @@ class StructuralModel:
                       direction: Literal["GX", "GY", "GZ", "LX", "LY", "LZ"] = "GZ",
                       id: str | None = None, start: float = 0.0,
                       end: float = 1.0,
-                      kind: Literal["uniform", "point"] = "uniform") -> BeamLoad:
+                      kind: Literal["uniform", "point"] = "uniform",
+                      group: str = "") -> BeamLoad:
         if element_id not in self.elements:
             raise KeyError(f"beam load references unknown element id {element_id!r}")
         if not 0.0 <= start <= end <= 1.0 and kind == "uniform":
@@ -525,7 +533,7 @@ class StructuralModel:
             self.load_cases[case] = LoadCase(name=case)
         load = BeamLoad(element_id, w_start=w_start, w_end=w_end,
                         case=case, direction=direction, start=float(start),
-                        end=float(end), kind=kind,
+                        end=float(end), kind=kind, group=group,
                         **({"id": id} if id else {}))
         self.beam_loads.append(load)
         return load
@@ -542,11 +550,12 @@ class StructuralModel:
         return es
 
     def add_body_force(self, case: str = "default", *, gx: float = 0.0,
-                       gy: float = 0.0, gz: float = -1.0) -> BodyForce:
+                       gy: float = 0.0, gz: float = -1.0,
+                       group: str = "") -> BodyForce:
         """Self weight of every element in ``case`` (see :class:`BodyForce`)."""
         if case not in self.load_cases:
             self.load_cases[case] = LoadCase(name=case)
-        bf = BodyForce(case, gx=gx, gy=gy, gz=gz)
+        bf = BodyForce(case, gx=gx, gy=gy, gz=gz, group=group)
         self.body_forces.append(bf)
         return bf
 
@@ -572,6 +581,34 @@ class StructuralModel:
                 | {b.case for b in self.body_forces}
                 | set(self.load_cases))
         return sorted(used)
+
+    # ── Groups (construction stages, 4-D) ────────────────────────────────────
+
+    def set_group(self, element_ids: Iterable[str], group: str) -> None:
+        """Put elements in the named structure group (MIDAS ``GRUP``, Rhino
+        ``midas_group`` User Text).  An element is in at most one group;
+        stored as ``Element.metadata["group"]``."""
+        for eid in element_ids:
+            self.elements[eid].metadata["group"] = group
+
+    def element_groups(self) -> dict[str, list[str]]:
+        """``{group: [element ids]}`` in first-use order (elements without a
+        group are left out)."""
+        out: dict[str, list[str]] = {}
+        for e in self.elements.values():
+            g = e.metadata.get("group")
+            if g:
+                out.setdefault(g, []).append(e.id)
+        return out
+
+    def load_groups(self) -> list[str]:
+        """Distinct load-group names used by nodal loads, beam loads and body
+        forces, in first-use order (MIDAS ``LDGR``)."""
+        seen: list[str] = []
+        for ld in list(self.loads) + list(self.beam_loads) + list(self.body_forces):
+            if ld.group and ld.group not in seen:
+                seen.append(ld.group)
+        return seen
 
     # ── Integrity ─────────────────────────────────────────────────────────────
 

@@ -304,3 +304,37 @@ def test_add_closure_pour_load_half_strip_on_edge_girder(model, layout):
 def test_add_closure_pour_load_requires_the_girder_in_the_phase(layout):
     with pytest.raises(ValueError, match="girder line 2"):
         add_closure_pour_load(_Model([1, 3]), layout, 2)
+
+
+# ── wet-concrete pours ───────────────────────────────────────────────────────
+
+def test_wet_concrete_plf_slab_haunch_forms():
+    from civilpy.structural.construction_staging import wet_concrete_plf
+    # 8.5 in slab over 9 ft, 2 in x 12 in haunch, 10 psf forms, 150 pcf
+    w = wet_concrete_plf(9.0, 8.5, haunch_t_in=2.0, haunch_w_in=12.0)
+    assert w == pytest.approx(150 * 8.5 / 12 * 9 + 150 * 2 / 12 * 1.0 + 10 * 9)
+
+
+def test_segments_by_station_clips_partial_elements():
+    from civilpy.structural.construction_staging import segments_by_station
+    line = [("e1", 0, 10), ("e2", 10, 20), ("e3", 20, 30)]
+    segs = segments_by_station(line, 5, 25)
+    assert [(s.element_id, s.start, s.end) for s in segs] == [("e1", 0.5, 1.0), ("e2", 0.0, 1.0), ("e3", 0.0, 0.5)]
+    # an element running against the stationing gets mirrored fractions
+    assert segments_by_station([("r", 10, 0)], 0, 2)[0].start == pytest.approx(0.8)
+
+
+def test_add_pour_loads_lands_in_case_and_group_with_totals():
+    from civilpy.structural.construction_staging import DeckPourLoad, PourSegment, add_pour_loads
+    from civilpy.structural.structural_model import StructuralModel
+    m = StructuralModel()
+    a = m.add_node(0, 0, 0); b = m.add_node(20, 0, 0); c = m.add_node(40, 0, 0)
+    e1 = m.add_element(a.id, b.id, midas_type="BEAM"); e2 = m.add_element(b.id, c.id, midas_type="BEAM")
+    pour = DeckPourLoad("D1", [PourSegment(e1.id), PourSegment(e2.id, 0.0, 0.5)], 8.0, 9.0,
+                        case="Wet Concrete D1", group="WetConc D1", forms_psf=0.0)
+    totals = add_pour_loads(m, [pour])
+    plf = 150 * 9 / 12 * 8
+    assert totals["D1"] == pytest.approx(plf / 1000 * (20 + 10))
+    loads = m.beam_loads_in_case("Wet Concrete D1")
+    assert {ld.group for ld in loads} == {"WetConc D1"}
+    assert loads[0].w_start == pytest.approx(-plf / 1000) and loads[1].end == 0.5

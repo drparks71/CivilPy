@@ -588,3 +588,66 @@ def test_midas_payloads_partial_and_point_beam_loads(start, end):
     items = mm.midas_payloads(m)["BMLD"]["1"]["ITEMS"]
     assert (items[0]["TYPE"], items[0]["D"][:2]) == ("UNILOAD", [start, end])
     assert (items[1]["TYPE"], items[1]["D"][0], items[1]["P"][0]) == ("CONLOAD", 0.4, -5.0)
+
+
+# ── groups, load groups, self weight (construction stages) ───────────────────
+
+def _grouped_frame():
+    from civilpy.structural.structural_model import StructuralModel
+    m = StructuralModel()
+    a = m.add_node(0, 0, 0)
+    b = m.add_node(10, 0, 0)
+    c = m.add_node(20, 0, 0)
+    g1 = m.add_element(a.id, b.id, midas_type="BEAM")
+    g2 = m.add_element(b.id, c.id, midas_type="BEAM")
+    m.set_group([g1.id], "Girder")
+    m.set_group([g2.id], "Girder-2")
+    m.add_restraint(a.id, preset="pin")
+    m.add_body_force("Self Weight", group="SW")
+    m.add_beam_load(g1.id, -0.5, case="Wet Concrete", group="WetConc D1")
+    m.add_load(c.id, fz=-10, case="Barrier", group="DC2")
+    return m, (a, b, c), (g1, g2)
+
+
+def test_midas_payloads_emits_grup_with_elements_and_their_nodes():
+    m, (a, b, c), (g1, g2) = _grouped_frame()
+    p = mm.midas_payloads(m)
+    assert list(p).index("GRUP") == list(p).index("ELEM") + 1
+    rows = {r["NAME"]: r for r in p["GRUP"].values()}
+    assert rows["Girder"]["E_LIST"] == [1] and rows["Girder"]["N_LIST"] == [1, 2]
+    assert rows["Girder-2"]["E_LIST"] == [2] and rows["Girder-2"]["N_LIST"] == [2, 3]
+    assert m.element_groups() == {"Girder": [g1.id], "Girder-2": [g2.id]}
+
+
+def test_midas_payloads_load_groups_and_body_force():
+    m, _, _ = _grouped_frame()
+    p = mm.midas_payloads(m)
+    order = list(p)
+    assert order.index("STLD") < order.index("LDGR") < order.index("BODF") < order.index("CNLD") < order.index("BMLD")
+    assert [r["NAME"] for r in p["LDGR"].values()] == ["DC2", "WetConc D1", "SW"]
+    assert p["BODF"] == {"1": {"LCNAME": "Self Weight", "GROUP_NAME": "SW", "FV": [0.0, 0.0, -1.0]}}
+    # a body-force-only case still gets its STLD row (MIDAS refuses a BODF naming an unknown case)
+    assert "Self Weight" in {c["NAME"] for c in p["STLD"].values()}
+    item = next(iter(p["BMLD"].values()))["ITEMS"][0]
+    assert item["GROUP_NAME"] == "WetConc D1"
+    assert next(iter(p["CNLD"].values()))["ITEMS"][0]["GROUP_NAME"] == "DC2"
+
+
+def test_midas_payloads_without_groups_is_unchanged():
+    m, _ = _hub_truss()
+    p = mm.midas_payloads(m)
+    assert "GRUP" not in p and "LDGR" not in p and "BODF" not in p
+
+
+def test_time_dependent_material_blocks_shapes_and_units():
+    t = mm.time_dependent_material_blocks("C4500", matl_id=3, fc_psi=4500, humidity_pct=70, v_s_in=4.2,
+                                          curing_age_days=3, tdmt_id=2, tdme_id=2)
+    tdmt = t["TDMT"]["2"]; tdme = t["TDME"]["2"]
+    assert tdmt["CODE"] == "AASHTO" and tdmt["STR"] == pytest.approx(4500 * 144 / 1000)   # ksf
+    assert tdmt["VOL"] == pytest.approx(4.2 / 12) and tdmt["HU"] == 70 and tdmt["AGE"] == 3
+    assert tdme["CODENAME"] == "ACI" and (tdme["A"], tdme["B"]) == (4.0, 0.85)
+    assert t["TMAT"] == {"3": {"TDMT_NAME": "C4500 C&S", "TDME_NAME": "C4500 Comp"}}
+    inch = mm.time_dependent_material_blocks("C4500", matl_id=3, fc_psi=4500, force_unit="LBF", length_unit="in")
+    assert inch["TDMT"]["1"]["STR"] == pytest.approx(4500) and inch["TDMT"]["1"]["VOL"] == pytest.approx(3.5)
+    with pytest.raises(ValueError):
+        mm.time_dependent_material_blocks("x", matl_id=1, fc_psi=4000, force_unit="KN")
