@@ -19,7 +19,9 @@ current provisions are applied to the same geometry:
   count" check, Whitmore tension on the effective area An + beta*Ag,
   Whitmore compression as an AASHTO 10.54 column (K = 1.2, Cc), block shear
   1 = phi(0.58 Fy Avg + Fu Atn) and 2 = phi(0.58 Fu Avn + Fy Atg), global
-  shear yield with Omega = 0.74 and fracture on the net section.  The 2012
+  shear yield with Omega = 0.74 and fracture on the net section, member
+  tear-out (block shear in the member's base metal, check 6) and combined
+  planes shear rupture (a gusset quadrant, check 7).  The 2012
   ODOT OSE LFR gusset rating sheet (2012) is the reference: its
   joint-42133 and joint-11000 numbers are reproduced in the tests.
 
@@ -124,6 +126,92 @@ def lfr_global_shear(a_gross: float, a_net: float, fy: float = 45.0, fu: float =
     c_f = phi_fracture * 0.58 * fu * a_net
     return CheckResult(article="FHWA-09 §3.7 (LFR)", name="Global shear yield / fracture (LFR)",
                        capacity=min(c_y, c_f), phi=1.0, details={"C_yield": c_y, "C_fracture": c_f})
+
+
+def lfr_member_tear_out(shear_gross_len: float, shear_net_len: float, tension_gross_len: float,
+                        tension_net_len: float, t_base_total: float, fy: float = 45.0, fu: float = 70.0,
+                        phi: float = 0.85) -> CheckResult:
+    """2012 sheet check 6 "Members Tear Out (Block Shear)": block shear in
+    the MEMBER's base metal along the same fastener-group path as the
+    gusset block shear (check 5).  The path lengths (shear planes summed,
+    tension plane) are the gusset's; the areas are those lengths times
+    ``t_base_total``, the member's base-metal thickness summed over both
+    sides.  Capacity 1 = phi(0.58 Fy Avg + Fu Atn), capacity 2 =
+    phi(0.58 Fu Avn + Fy Atg); the smaller governs.
+
+    The sheet applies it only to member ends spliced at the joint and not
+    milled (an unspliced member is continuous through the joint and cannot
+    tear out); the caller makes that call.  ``capacity`` is factored (phi
+    inside), ``phi`` = 1.0.  The sheet notes the base-metal thickness is
+    conservative (corner angles may add capacity)."""
+    a_vg, a_vn = shear_gross_len * t_base_total, shear_net_len * t_base_total
+    a_tg, a_tn = tension_gross_len * t_base_total, tension_net_len * t_base_total
+    bs = lfr_block_shear(a_vg, a_vn, a_tg, a_tn, fy, fu, phi=phi)
+    return CheckResult(article="FHWA-09 §3.6 (LFR), member base metal", name="Member tear-out (LFR)",
+                       capacity=bs.capacity, phi=1.0,
+                       details={**bs.details, "A_vg": a_vg, "A_vn": a_vn, "A_tg": a_tg, "A_tn": a_tn,
+                                "t_base_total": t_base_total})
+
+
+def lfr_member_tear_out_rf(capacity_factored: float, dl: float, ll_comp: float, ll_tens: float,
+                           f1: float = 1.3, f2: float = 2.17) -> float:
+    """Rating factor of check 6 the way the 2012 sheet forms it:
+    RF = (C - f1 |DL|) / (f2 max(|LL+I compression|, |LL+I tension|)).
+
+    Note the sheet subtracts the ABSOLUTE dead load, so a dead load that
+    relieves the tension check still reduces the RF (conservative), and it
+    takes the larger live load of either sense.  Unfactored inputs."""
+    ll = max(abs(ll_comp), abs(ll_tens))
+    if ll <= 0:
+        return float("inf")
+    return (capacity_factored - f1 * abs(dl)) / (f2 * ll)
+
+
+def lfr_combined_planes(a_h_gross: float, a_h_net: float, a_v_gross: float, a_v_net: float,
+                        fy: float = 45.0, fu: float = 70.0, phi: float = 0.85) -> CheckResult:
+    """2012 sheet check 7 "Combined Planes Shear Rupture Resistance" for one
+    gusset quadrant: a tension diagonal (alone, or with a tension vertical)
+    pulling the quadrant out, its horizontal component resisted on the
+    quadrant's horizontal cut and its vertical component on the vertical
+    cut.  Areas are for both plates (cut length x the smaller Whitmore
+    thickness of the inner plus the outer plate, as the sheet takes them).
+
+    Two cases, each giving a horizontal and a vertical capacity:
+
+    * A - shear yield & tension fracture:  H = phi(0.58 Fy Ahg + Fu Ahn),
+      V = phi(0.58 Fy Avg + Fu Avn)
+    * B - shear fracture & tension yield:  H = phi(0.58 Fu Ahn + Fy Ahg),
+      V = phi(0.58 Fu Avn + Fy Avg)
+
+    As in the sheet, each direction's capacity takes both its shear and its
+    tension term from the SAME cut (the horizontal capacity from the
+    horizontal cut's gross and net areas).  ``capacity`` = the smallest of
+    the four (factored, phi inside), ``phi`` = 1.0; the four are in
+    ``details`` for :func:`lfr_combined_planes_rf`."""
+    h_a = phi * (0.58 * fy * a_h_gross + fu * a_h_net)
+    v_a = phi * (0.58 * fy * a_v_gross + fu * a_v_net)
+    h_b = phi * (0.58 * fu * a_h_net + fy * a_h_gross)
+    v_b = phi * (0.58 * fu * a_v_net + fy * a_v_gross)
+    return CheckResult(article="FHWA-09 (LFR), 2012 ODOT sheet check 7", name="Combined planes shear rupture (LFR)",
+                       capacity=min(h_a, v_a, h_b, v_b), phi=1.0,
+                       details={"H_A": h_a, "V_A": v_a, "H_B": h_b, "V_B": v_b})
+
+
+def lfr_combined_planes_rf(check: CheckResult, dl_h: float, dl_v: float, ll_h: float, ll_v: float,
+                           f1: float = 1.3, f2: float = 2.17) -> dict:
+    """Rating factors of one quadrant (check 7): RF = (C - f1 DL) / (f2 LL)
+    for the horizontal and the vertical component in each case.  ``dl_*``
+    and ``ll_*`` are the UNFACTORED tension components of the diagonal (or
+    the diagonal plus the vertical when both are in tension) in that
+    direction, LL with impact; the sheet rates only members in tension or
+    reversal.  Returns ``{"H_A", "V_A", "H_B", "V_B", "min"}`` (inf where
+    the live-load component is zero)."""
+    d = check.details
+    out = {}
+    for key, dl, ll in (("H_A", dl_h, ll_h), ("V_A", dl_v, ll_v), ("H_B", dl_h, ll_h), ("V_B", dl_v, ll_v)):
+        out[key] = float("inf") if ll <= 0 else (d[key] - f1 * dl) / (f2 * ll)
+    out["min"] = min(out.values())
+    return out
 
 
 # --------------------------------------------------------------------------- #

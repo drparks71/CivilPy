@@ -119,3 +119,80 @@ def test_pin_flexure_and_interaction():
     m = g.pin_flexure_resistance(7.0, 33.0)
     assert m.capacity == pytest.approx(33.0 * 343.0 / 6.0)
     assert g.pin_interaction(0.6 * m.capacity, m.capacity, 0.8 * 100.0, 100.0) == pytest.approx(0.36 + 0.64)
+
+
+# --------------------------------------------------------------------------- #
+# 2012 ODOT sheet checks 6 (member tear-out) and 7 (combined planes)
+# --------------------------------------------------------------------------- #
+import itertools  # noqa: E402
+
+_g = g
+
+_PATHS = [(30.0, 22.0, 9.0, 7.0), (80.0, 60.0, 12.0, 8.5), (18.0, 14.0, 5.5, 4.5)]
+_T_BASE = [0.5, 0.75, 1.3]
+_MATS = [(33.0, 60.0), (36.0, 58.0), (50.0, 65.0)]
+
+
+@pytest.mark.parametrize("path,t,mat", list(itertools.product(_PATHS, _T_BASE, _MATS)))
+def test_member_tear_out_is_block_shear_on_base_metal(path, t, mat):
+    fy, fu = mat
+    lv_g, lv_n, lt_g, lt_n = path
+    res = _g.lfr_member_tear_out(lv_g, lv_n, lt_g, lt_n, t, fy, fu)
+    ref = _g.lfr_block_shear(lv_g * t, lv_n * t, lt_g * t, lt_n * t, fy, fu, phi=0.85)
+    assert res.capacity == pytest.approx(ref.capacity)
+    assert res.capacity == pytest.approx(min(res.details["C1"], res.details["C2"]))
+    assert res.phi == 1.0
+    # linear in the base-metal thickness
+    assert _g.lfr_member_tear_out(lv_g, lv_n, lt_g, lt_n, 2 * t, fy, fu).capacity == pytest.approx(2 * res.capacity)
+
+
+@pytest.mark.parametrize("dl,lc,lt", [(-280.0, -90.0, 15.0), (240.0, -9.0, 84.0), (0.0, -60.0, 36.0)])
+def test_member_tear_out_rf_uses_absolute_dead_load_and_larger_live_load(dl, lc, lt):
+    cap = 2000.0
+    rf = _g.lfr_member_tear_out_rf(cap, dl, lc, lt)
+    assert rf == pytest.approx((cap - 1.3 * abs(dl)) / (2.17 * max(abs(lc), abs(lt))))
+    assert rf == pytest.approx(_g.lfr_member_tear_out_rf(cap, -dl, lt, lc))     # sign / sense do not matter
+    assert _g.lfr_member_tear_out_rf(cap, dl, 0.0, 0.0) == float("inf")
+
+
+_QUADS = [(40.0, 34.0, 30.0, 25.0), (65.0, 50.0, 0.0, 0.0), (20.0, 20.0, 35.0, 35.0)]
+
+
+@pytest.mark.parametrize("areas,mat,phi", list(itertools.product(_QUADS, _MATS, [0.85, 1.0])))
+def test_combined_planes_capacities(areas, mat, phi):
+    fy, fu = mat
+    ahg, ahn, avg, avn = areas
+    res = _g.lfr_combined_planes(ahg, ahn, avg, avn, fy, fu, phi=phi)
+    d = res.details
+    assert res.capacity == pytest.approx(min(d["H_A"], d["V_A"], d["H_B"], d["V_B"]))
+    assert d["H_A"] == pytest.approx(phi * (0.58 * fy * ahg + fu * ahn))
+    assert d["V_B"] == pytest.approx(phi * (0.58 * fu * avn + fy * avg))
+    # all four scale with phi
+    one = _g.lfr_combined_planes(ahg, ahn, avg, avn, fy, fu, phi=1.0).details
+    for k in ("H_A", "V_A", "H_B", "V_B"):
+        assert d[k] == pytest.approx(phi * one[k])
+    # a quadrant with no vertical cut has no vertical capacity
+    if avg == 0 and avn == 0:
+        assert d["V_A"] == 0 and d["V_B"] == 0
+
+
+def test_combined_planes_cases_coincide_when_gross_equals_net_and_fy_equals_fu():
+    d = _g.lfr_combined_planes(30.0, 30.0, 20.0, 20.0, 50.0, 50.0).details
+    assert d["H_A"] == pytest.approx(d["H_B"]) and d["V_A"] == pytest.approx(d["V_B"])
+
+
+@pytest.mark.parametrize("areas,mat", list(itertools.product(_QUADS, _MATS)))
+def test_combined_planes_rf(areas, mat):
+    res = _g.lfr_combined_planes(*areas, *mat)
+    dl_h, dl_v, ll_h, ll_v = 120.0, 90.0, 40.0, 30.0
+    rf = _g.lfr_combined_planes_rf(res, dl_h, dl_v, ll_h, ll_v)
+    for key, dl, ll in (("H_A", dl_h, ll_h), ("V_A", dl_v, ll_v), ("H_B", dl_h, ll_h), ("V_B", dl_v, ll_v)):
+        assert rf[key] == pytest.approx((res.details[key] - 1.3 * dl) / (2.17 * ll))
+    assert rf["min"] == min(rf["H_A"], rf["V_A"], rf["H_B"], rf["V_B"])
+    none = _g.lfr_combined_planes_rf(res, dl_h, dl_v, 0.0, 0.0)
+    assert none["min"] == float("inf")
+    # operating (f2 1.3) rates higher than inventory (2.17) wherever the capacity exceeds the factored dead load
+    op = _g.lfr_combined_planes_rf(res, dl_h, dl_v, ll_h, ll_v, f2=1.3)
+    for key in ("H_A", "V_A", "H_B", "V_B"):
+        if rf[key] > 0:
+            assert op[key] > rf[key]
